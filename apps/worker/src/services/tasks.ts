@@ -199,6 +199,43 @@ export class TaskService {
       .query<Record<string, unknown>>('SELECT * FROM task_links WHERE task_id = ? ORDER BY created_at DESC', taskId)
       .map((row) => ({ id: String(row.id), kind: String(row.kind), ref: String(row.ref), url: (row.url as string) ?? null }));
   }
+
+  // ---- Dependencies (task graph) ------------------------------------------
+
+  addDependency(taskId: string, dependsOnTaskId: string, actor: string, kind = 'blocks'): { ok: boolean; error?: string } {
+    if (taskId === dependsOnTaskId) return { ok: false, error: 'A task cannot depend on itself' };
+    const task = this.get(taskId);
+    const dep = this.get(dependsOnTaskId);
+    if (!task || !dep) return { ok: false, error: 'Task not found' };
+    this.db.run(
+      'INSERT INTO task_dependencies (id, task_id, depends_on_task_id, kind, created_at) VALUES (?, ?, ?, ?, ?)',
+      newId('dep'), taskId, dependsOnTaskId, kind, nowIso(),
+    );
+    this.audit.record({ actor, action: 'task.dependency_add', targetKind: 'task', targetId: taskId, outcome: 'ok', detail: `depends on ${dependsOnTaskId} (${kind})` });
+    return { ok: true };
+  }
+
+  listDependencies(taskId: string): Array<{ id: string; dependsOnTaskId: string; kind: string; dependsOnTitle: string; dependsOnStatus: string }> {
+    return this.db
+      .query<Record<string, unknown>>(
+        `SELECT d.*, t.title AS dep_title, t.internal_status AS dep_status
+         FROM task_dependencies d JOIN tasks t ON t.id = d.depends_on_task_id
+         WHERE d.task_id = ? ORDER BY d.created_at DESC`,
+        taskId,
+      )
+      .map((row) => ({
+        id: String(row.id),
+        dependsOnTaskId: String(row.depends_on_task_id),
+        kind: String(row.kind),
+        dependsOnTitle: String(row.dep_title),
+        dependsOnStatus: String(row.dep_status),
+      }));
+  }
+
+  /** Dependencies whose upstream task is not Completed/Cancelled. */
+  unmetDependencies(taskId: string): Array<{ dependsOnTaskId: string; dependsOnTitle: string; dependsOnStatus: string }> {
+    return this.listDependencies(taskId).filter((d) => !['Completed', 'Cancelled'].includes(d.dependsOnStatus));
+  }
 }
 
 function toTask(row: Record<string, unknown>): Task {

@@ -22,6 +22,10 @@ export default function Agents(): JSX.Element {
   const [runs, setRuns] = useState<Run[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [assign, setAssign] = useState({ taskId: '', providerId: '', repoId: '', stage: 'implementation' });
+  const [recs, setRecs] = useState<Array<{ providerId: string; providerName: string; status: string; score: number; rationale: string; eligible: boolean }> | null>(null);
+  const [deps, setDeps] = useState<{ dependencies: Array<{ dependsOnTitle: string; dependsOnStatus: string; kind: string }>; unmet: Array<{ dependsOnTitle: string; dependsOnStatus: string }> } | null>(null);
+  const [findings, setFindings] = useState<Array<{ id: string; stage: string; kind: string; summary: string; confidence: string; created_at: string }>>([]);
+  const [pipelineResult, setPipelineResult] = useState<string | null>(null);
 
   const load = () => {
     api.tasks().then(setTasks);
@@ -31,18 +35,41 @@ export default function Agents(): JSX.Element {
   };
   useEffect(load, []);
 
+  useEffect(() => {
+    if (!assign.taskId) { setRecs(null); setDeps(null); setFindings([]); return; }
+    api.recommend(assign.taskId).then((r) => setRecs(r.recommendations)).catch(() => setRecs(null));
+    api.taskDependencies(assign.taskId).then(setDeps).catch(() => setDeps(null));
+    api.taskFindings(assign.taskId).then(setFindings).catch(() => setFindings([]));
+  }, [assign.taskId]);
+
   const startRun = async () => {
-    const result = await api.startRun({
+    // Coordinator start: conflict + dependency + policy guards run first.
+    const result = await api.startGuardedRun({
       taskId: assign.taskId || null,
       providerId: assign.providerId,
       repoId: assign.repoId || null,
       stage: assign.stage,
+      maxAttempts: 3,
     });
     if (result.ok) {
-      setMessage(`Run ${result.run?.id} queued — monitor it under Runs, Logs & Evidence.`);
+      setMessage(`Run ${result.run?.id} queued in an isolated worktree.${result.warnings.length > 0 ? ` Warnings: ${result.warnings.join('; ')}` : ''}`);
       load();
     } else {
       setMessage(`Run not started: ${result.error}`);
+    }
+  };
+
+  const runPipeline = async () => {
+    if (!assign.taskId) return;
+    const result = await api.runPipeline({ taskId: assign.taskId, providerId: assign.providerId || null, repoId: assign.repoId || null, autonomyLevel: 1 });
+    if (result.ok && result.result) {
+      setPipelineResult(
+        `Pipeline ${result.result.runId}: ${result.result.stages.map((s) => `${s.stage}=${s.status}`).join(', ')} · ${result.result.findings} finding(s)${result.result.stoppedForApproval ? ' · stopped at approval gate' : ''}`,
+      );
+      load();
+      api.taskFindings(assign.taskId).then(setFindings);
+    } else {
+      setPipelineResult(`Pipeline failed: ${result.error}`);
     }
   };
 
@@ -72,7 +99,7 @@ export default function Agents(): JSX.Element {
       </Card>
 
       <div className="grid cols-2" style={{ marginTop: 16 }}>
-        <Card title="Assign a run">
+        <Card title="Assign a run (coordinator)">
           <div className="field">
             <label>Task</label>
             <select value={assign.taskId} onChange={(e) => setAssign({ ...assign, taskId: e.target.value })}>
@@ -102,9 +129,55 @@ export default function Agents(): JSX.Element {
               {STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
           </div>
-          <button className="btn primary" disabled={!assign.providerId} onClick={startRun}>Start run</button>
-          <div className="faint" style={{ marginTop: 8 }}>
-            Runs on registered repositories get their own Git branch + worktree. Providers that are not verified will fail honestly — they never fake success.
+          <div className="row wrap">
+            <button className="btn primary" disabled={!assign.providerId} onClick={startRun}>Start guarded run</button>
+            <button className="btn" disabled={!assign.taskId} onClick={runPipeline}>Run AI pipeline (triage → plan → approval)</button>
+          </div>
+          {pipelineResult && <div className="notice ok" style={{ marginTop: 10 }}>{pipelineResult}</div>}
+
+          {recs && recs.length > 0 && (
+            <>
+              <div className="faint" style={{ marginTop: 12 }}>Capability-based recommendations <Badge color="purple">inferred</Badge>:</div>
+              <div className="link-list" style={{ marginTop: 6 }}>
+                {recs.slice(0, 3).map((r) => (
+                  <div key={r.providerId} className="notice">
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <strong>{r.providerName}</strong>
+                      <Badge color={r.eligible ? 'green' : 'gray'}>{r.eligible ? 'eligible' : r.status} · score {r.score}</Badge>
+                    </div>
+                    <div className="faint">{r.rationale}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {deps && deps.dependencies.length > 0 && (
+            <>
+              <div className="faint" style={{ marginTop: 12 }}>Dependencies:</div>
+              {deps.dependencies.map((d, i) => (
+                <div key={i} className={`notice ${deps.unmet.some((u) => u.dependsOnTitle === d.dependsOnTitle) ? 'warn' : ''}`} style={{ marginTop: 6 }}>
+                  {d.kind}: <strong>{d.dependsOnTitle}</strong> [{d.dependsOnStatus}]
+                </div>
+              ))}
+            </>
+          )}
+
+          {findings.length > 0 && (
+            <>
+              <div className="faint" style={{ marginTop: 12 }}>Shared brain findings (evidence graph):</div>
+              <div className="log" style={{ maxHeight: 160, marginTop: 6 }}>
+                {findings.slice(0, 12).map((f) => (
+                  <div key={f.id} className={f.confidence === 'inferred' ? 'ev-warn' : 'ev-info'}>
+                    [{f.stage}/{f.kind}] {f.summary} <span className="faint">({f.confidence})</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="faint" style={{ marginTop: 10 }}>
+            Guards enforced before every start: no second active run on the same task, overlapping-file warnings across parallel runs, unmet dependencies block implementation, project provider policy respected. Providers that are not verified will fail honestly — they never fake success.
           </div>
         </Card>
 

@@ -5,3 +5,8 @@ export * from './duplicate.js';
 export * from './status.js';
 export * from './approvals.js';
 export * from './evidence.js';
+export * from './untrusted.js';
+export * from './issueDraft.js';
+export * from './review.js';
+export * from './recommend.js';
+export * from './discrepancy.js';

@@ -39,6 +39,17 @@ async function main(): Promise<void> {
 
   app.use('/api', buildRoutes(services));
 
+  // Budget enforcement: running/queued runs that exceed their budget become
+  // visible `timeout` failures — never silent successes.
+  setInterval(() => {
+    try {
+      const timedOut = services.runs.enforceTimeouts();
+      if (timedOut > 0) console.log(`[worker] marked ${timedOut} run(s) as timeout (budget exceeded)`);
+    } catch (err) {
+      console.error('[worker] timeout sweep failed:', err);
+    }
+  }, 30_000).unref();
+
   // Serve the built UI when present (desktop shell / single-process mode).
   app.use(express.static(new URL('../../ui/dist', import.meta.url).pathname));
 

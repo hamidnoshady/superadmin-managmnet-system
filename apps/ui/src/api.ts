@@ -101,7 +101,64 @@ export const api = {
   approvals: () => request<ApprovalRequest[]>('/approvals'),
   decideApproval: (id: string, decision: 'approved' | 'rejected', reason?: string) =>
     request<{ ok: boolean; error?: string }>(`/approvals/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision, reason }) }),
+
+  // Phase 2–4
+  engineeringHealth: () => request<EngineeringHealth>('/engineering/health'),
+  recommend: (taskId: string) => request<{ task: unknown; requirements: Record<string, boolean>; recommendations: Array<{ providerId: string; providerName: string; status: string; score: number; rationale: string; eligible: boolean }> }>(`/coordinator/recommend/${taskId}`),
+  assign: (body: unknown) => request<{ ok: boolean; error?: string; warnings: string[] }>('/coordinator/assign', { method: 'POST', body: JSON.stringify(body) }),
+  startGuardedRun: (body: unknown) => request<{ ok: boolean; run?: Run; error?: string; warnings: string[] }>('/coordinator/start', { method: 'POST', body: JSON.stringify(body) }),
+  runTests: (runId: string, command?: string) => request<{ ok: boolean; summary: string; output: string | null; error?: string }>(`/coordinator/runs/${runId}/tests`, { method: 'POST', body: JSON.stringify({ command }) }),
+  reviewRun: (runId: string) => request<{ ok: boolean; verdict?: string; report?: { verdict: string; findings: Array<{ code: string; severity: string; message: string }>; summary: string }; error?: string }>(`/coordinator/runs/${runId}/review`, { method: 'POST' }),
+  preparePr: (runId: string) => request<{ ok: boolean; preparationId?: string; title?: string; body?: string; approvalId?: string; error?: string }>(`/coordinator/runs/${runId}/pr`, { method: 'POST' }),
+  preparations: () => request<Array<{ id: string; run_id: string; task_id: string | null; title: string; body: string; status: string; pr_url: string | null; created_at: string }>>('/coordinator/preparations'),
+  retryRun: (runId: string) => request<{ ok: boolean; run?: Run; error?: string }>(`/runs/${runId}/retry`, { method: 'POST' }),
+  runPipeline: (body: unknown) => request<{ ok: boolean; result?: { runId: string; stages: Array<{ stage: string; status: string; note: string }>; findings: number; stoppedForApproval: boolean }; error?: string }>('/brain/pipeline', { method: 'POST', body: JSON.stringify(body) }),
+  taskFindings: (taskId: string) => request<Array<{ id: string; stage: string; kind: string; summary: string; detail: string | null; confidence: string; created_at: string }>>(`/tasks/${taskId}/findings`),
+  taskDependencies: (taskId: string) => request<{ dependencies: Array<{ id: string; dependsOnTaskId: string; kind: string; dependsOnTitle: string; dependsOnStatus: string }>; unmet: Array<{ dependsOnTaskId: string; dependsOnTitle: string; dependsOnStatus: string }> }>(`/tasks/${taskId}/dependencies`),
+  addDependency: (taskId: string, dependsOnTaskId: string) => request<{ ok: boolean; error?: string }>(`/tasks/${taskId}/dependencies`, { method: 'POST', body: JSON.stringify({ dependsOnTaskId }) }),
+
+  ingestConfig: () => request<{ apiUrl: string; authEnv: string; webhookSecretEnv: string }>('/ingest/biza-miz'),
+  saveIngestConfig: (body: unknown) => request<unknown>('/ingest/biza-miz', { method: 'PUT', body: JSON.stringify(body) }),
+  ingestCheck: () => request<{ status: string; notes: string; checkedAt: string }>('/ingest/check'),
+  ingestApi: () => request<IngestResult>('/ingest/api', { method: 'POST' }),
+  ingestImport: (items: unknown[], source: string) => request<IngestResult>('/ingest/import', { method: 'POST', body: JSON.stringify({ items, source }) }),
+  ingestBatches: () => request<Array<{ id: string; channel: string; source: string | null; imported: number; skipped: number; errors: string; created_at: string }>>('/ingest/batches'),
+
+  backups: () => request<Array<{ file: string; createdAt: string; sizeBytes: number; manifest: Record<string, unknown> }>>('/backups'),
+  exportBackup: () => request<{ file: string; createdAt: string; sizeBytes: number; manifest: Record<string, unknown> }>('/backups/export', { method: 'POST' }),
+  validateBackup: (file: string) => request<{ ok: boolean; counts?: Record<string, number>; error?: string }>('/backups/validate', { method: 'POST', body: JSON.stringify({ file }) }),
+  restoreBackup: (file: string, approvalId?: string) => request<{ ok: boolean; error?: string; note?: string; requiresApproval?: boolean }>('/backups/restore', { method: 'POST', body: JSON.stringify({ file, approvalId }) }),
+
+  openRepository: (id: string, target: 'ide' | 'terminal', approvalId?: string) =>
+    request<{ ok: boolean; method: string; error?: string; requiresApproval?: boolean }>(`/repositories/${id}/open`, { method: 'POST', body: JSON.stringify({ target, approvalId }) }),
 };
+
+export interface IngestResult {
+  channel: string;
+  ok: boolean;
+  imported: number;
+  skipped: number;
+  errors: string[];
+  note: string;
+}
+
+export interface EngineeringHealth {
+  generatedAt: string;
+  cycle: { completedTasks: number; avgCycleHours: number | null; completionRate: number };
+  quality: { evidenceBackedCompleted: number; evidenceCoverage: number; failingTestTasks: number; reviewApprovals: number; reviewRequestsChanges: number };
+  runs: { total: number; succeeded: number; failed: number; timeout: number; interrupted: number; cancelled: number; successRate: number };
+  providers: { verified: number; total: number; unverified: number };
+  github: { openIssues: number; openPrs: number; lastSync: string | null; syncAgeMinutes: number | null };
+  support: { open: number; avgAgeHours: number | null };
+  releaseReadiness: {
+    readyForMerge: number;
+    releaseBlockers: Array<{ taskId: string; title: string; reason: string }>;
+    ciConcerns: number;
+    verdict: 'ready' | 'not-ready';
+  };
+  discrepancies: Array<{ taskId: string; taskTitle: string; code: string; severity: string; message: string; internalStatus: string }>;
+  items: Array<{ label: string; value: string; source: string; updatedAt: string | null; confidence: string }>;
+}
 
 export interface AppSettings {
   scanRoots: string[];

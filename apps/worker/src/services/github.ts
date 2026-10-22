@@ -254,6 +254,49 @@ export class GithubService {
     }
   }
 
+  /**
+   * Create a pull request. ONLY called after the approval gate has passed.
+   * The PR body is built from evidence and redacted before leaving the machine.
+   */
+  async createPullRequest(
+    repo: { id: string; githubOwner: string | null; githubRepo: string | null; remoteUrl: string | null },
+    title: string,
+    body: string,
+    head: string,
+    base: string,
+    actor: string,
+  ): Promise<{ ok: boolean; url?: string; error?: string }> {
+    const gh = repo.githubOwner && repo.githubRepo ? { owner: repo.githubOwner, repo: repo.githubRepo } : parseGithubRemote(repo.remoteUrl);
+    if (!gh) return { ok: false, error: 'No GitHub remote' };
+
+    const safeTitle = redact(title).redacted;
+    const safeBody = redact(body).redacted;
+    try {
+      assertSafeForOutbound(`${safeTitle}\n${safeBody}`);
+    } catch (err) {
+      this.audit.record({
+        actor, action: 'github.pr_create', targetKind: 'repository', targetId: repo.id,
+        outcome: 'denied', detail: err instanceof Error ? err.message : String(err),
+      });
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    try {
+      const { stdout } = await execFileAsync(
+        'gh',
+        ['pr', 'create', '--repo', `${gh.owner}/${gh.repo}`, '--title', safeTitle, '--body', safeBody, '--head', head, '--base', base],
+        { timeout: 30_000 },
+      );
+      const url = stdout.trim().split('\n').pop() ?? '';
+      this.audit.record({ actor, action: 'github.pr_create', targetKind: 'repository', targetId: repo.id, outcome: 'ok', detail: `Created PR: ${url}` });
+      return { ok: true, url };
+    } catch (err) {
+      const error = redact(err instanceof Error ? err.message : String(err)).redacted;
+      this.audit.record({ actor, action: 'github.pr_create', targetKind: 'repository', targetId: repo.id, outcome: 'error', detail: error });
+      return { ok: false, error };
+    }
+  }
+
   listIssues(repoId: string): GithubIssue[] {
     return this.db
       .query<Record<string, unknown>>('SELECT * FROM github_issues WHERE repo_id = ? ORDER BY number DESC', repoId)

@@ -10,6 +10,9 @@ const DEFAULT_AGENT_POLICY: AgentPolicy = {
   allowTerminal: true,
   maxRunMinutes: 30,
   allowedProviders: [],
+  autonomyLevel: 0,
+  requiredStages: [],
+  maxRetries: 1,
 };
 
 export class RegistryService {

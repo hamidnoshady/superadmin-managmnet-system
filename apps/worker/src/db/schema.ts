@@ -1,5 +1,9 @@
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
+/**
+ * Full schema for fresh databases (v2). Additive migrations for older files
+ * live in Database.migrate() — never destructive, never dropping data.
+ */
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,
@@ -16,6 +20,7 @@ CREATE TABLE IF NOT EXISTS projects (
   build_command TEXT,
   test_command  TEXT,
   agent_policy  TEXT NOT NULL DEFAULT '{}',
+  environment_refs TEXT NOT NULL DEFAULT '[]',
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -112,7 +117,11 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at    TEXT,
   finished_at   TEXT,
   created_at    TEXT NOT NULL,
-  recovered     INTEGER NOT NULL DEFAULT 0
+  recovered     INTEGER NOT NULL DEFAULT 0,
+  attempt       INTEGER NOT NULL DEFAULT 1,
+  max_attempts  INTEGER NOT NULL DEFAULT 1,
+  retry_of      TEXT,
+  review_verdict TEXT
 );
 
 CREATE TABLE IF NOT EXISTS run_events (
@@ -224,6 +233,47 @@ CREATE TABLE IF NOT EXISTS sync_checkpoints (
   last_error   TEXT,
   status       TEXT NOT NULL DEFAULT 'never',
   UNIQUE(repo_id, resource)
+);
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+  id                 TEXT PRIMARY KEY,
+  task_id            TEXT NOT NULL,
+  depends_on_task_id TEXT NOT NULL,
+  kind               TEXT NOT NULL DEFAULT 'blocks',
+  created_at         TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS brain_findings (
+  id          TEXT PRIMARY KEY,
+  task_id     TEXT,
+  run_id      TEXT,
+  stage       TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  summary     TEXT NOT NULL,
+  detail      TEXT,
+  confidence  TEXT NOT NULL DEFAULT 'confirmed',
+  created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ingest_batches (
+  id         TEXT PRIMARY KEY,
+  channel    TEXT NOT NULL,
+  source     TEXT,
+  imported   INTEGER NOT NULL DEFAULT 0,
+  skipped    INTEGER NOT NULL DEFAULT 0,
+  errors     TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pr_preparations (
+  id         TEXT PRIMARY KEY,
+  run_id     TEXT NOT NULL,
+  task_id    TEXT,
+  title      TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'draft',
+  pr_url     TEXT,
+  created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(internal_status);

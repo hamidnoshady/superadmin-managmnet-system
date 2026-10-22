@@ -10,6 +10,7 @@ import Agents from './pages/Agents';
 import Providers from './pages/Providers';
 import Runs from './pages/Runs';
 import Settings from './pages/Settings';
+import Search from './pages/Search';
 
 const NAV = [
   { to: '/', label: 'Command Center', icon: '◎', end: true },
@@ -47,7 +48,7 @@ function TopBar(): JSX.Element {
         value={q}
         onChange={(e) => setQ(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && q.trim()) navigate(`/agents?q=${encodeURIComponent(q.trim())}`);
+          if (e.key === 'Enter' && q.trim()) navigate(`/search?q=${encodeURIComponent(q.trim())}`);
         }}
       />
       {health === 'ok' && <Badge color="green" dot>worker online</Badge>}
@@ -94,6 +95,7 @@ export default function App(): JSX.Element {
             <Route path="/providers" element={<Providers />} />
             <Route path="/runs" element={<Runs />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/search" element={<Search />} />
             <Route path="/tasks" element={<Agents />} />
             <Route path="*" element={<CommandCenter />} />
           </Routes>

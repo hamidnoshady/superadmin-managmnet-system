@@ -161,6 +161,12 @@ export interface Run {
   createdAt: string;
   /** True when state was recovered after an interrupted application restart. */
   recovered: boolean;
+  /** Retry chain: 1-based attempt number and optional link to the prior run. */
+  attempt: number;
+  maxAttempts: number;
+  retryOf: string | null;
+  /** Set by the independent review stage. */
+  reviewVerdict: 'approve' | 'request_changes' | 'needs_human' | null;
 }
 
 export interface RunEvent {
@@ -196,6 +202,17 @@ export interface AgentPolicy {
   allowTerminal: boolean;
   maxRunMinutes: number;
   allowedProviders: string[];
+  /**
+   * 0 = every stage approval-gated (default)
+   * 1 = automatic investigation/planning, implementation gated
+   * 2 = automatic implementation in isolated worktrees, merge gated
+   * 3 = unattended pipeline within budget (explicit per-project opt-in)
+   */
+  autonomyLevel: 0 | 1 | 2 | 3;
+  /** Stages the pipeline must pass for this project (empty = all). */
+  requiredStages: RunStage[];
+  /** Bounded retries for failed runs. */
+  maxRetries: number;
 }
 
 export interface Repository {
@@ -333,7 +350,8 @@ export type ApprovalKind =
   | 'git_destructive'
   | 'external_write'
   | 'llm_send'
-  | 'policy_change';
+  | 'policy_change'
+  | 'restore_backup';
 
 export interface ApprovalRequest {
   id: string;

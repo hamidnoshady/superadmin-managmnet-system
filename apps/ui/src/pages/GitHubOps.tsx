@@ -13,6 +13,8 @@ export default function GitHubOps(): JSX.Element {
   const [message, setMessage] = useState<string | null>(null);
   const [draft, setDraft] = useState({ title: '', body: '' });
   const [busy, setBusy] = useState(false);
+  const [preparations, setPreparations] = useState<Array<{ id: string; run_id: string; task_id: string | null; title: string; body: string; status: string; pr_url: string | null; created_at: string }>>([]);
+  const [discrepancies, setDiscrepancies] = useState<Array<{ taskId: string; taskTitle: string; code: string; severity: string; message: string }>>([]);
 
   useEffect(() => {
     api.repositories().then((r) => {
@@ -21,6 +23,8 @@ export default function GitHubOps(): JSX.Element {
     });
     api.tasks().then(setTasks);
     api.githubAuth().then(setAuth);
+    api.preparations().then(setPreparations).catch(() => setPreparations([]));
+    api.engineeringHealth().then((h) => setDiscrepancies(h.discrepancies)).catch(() => setDiscrepancies([]));
   }, []);
 
   useEffect(() => {
@@ -163,6 +167,46 @@ export default function GitHubOps(): JSX.Element {
           </tbody>
         </table>
       </Card>
+
+      <div className="grid cols-2" style={{ marginTop: 16 }}>
+        <Card title={`PR preparations (${preparations.length})`} right={<Badge color="amber">approval-gated</Badge>}>
+          {preparations.length === 0 ? (
+            <div className="faint">No PRs prepared yet. Prepare one from a succeeded run under Runs, Logs &amp; Evidence.</div>
+          ) : (
+            preparations.slice(0, 6).map((p) => (
+              <div key={p.id} className="notice" style={{ marginBottom: 8 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <strong>{p.title}</strong>
+                  <Badge color="purple">{p.status}</Badge>
+                </div>
+                <div className="faint">run {p.run_id.slice(0, 12)}… · {timeAgo(p.created_at)}</div>
+                <details className="raw">
+                  <summary>PR body (evidence + criteria coverage)</summary>
+                  <pre>{p.body}</pre>
+                </details>
+                {p.pr_url && <a href={p.pr_url} target="_blank" rel="noreferrer">{p.pr_url}</a>}
+              </div>
+            ))
+          )}
+          <div className="faint">
+            Creating the real PR is an external write: it waits in the approval queue (Settings) and executes only after approval. Merge and release always stay human-approved.
+          </div>
+        </Card>
+
+        <Card title="Internal ↔ GitHub discrepancies" right={<Badge color={discrepancies.length > 0 ? 'amber' : 'green'}>{discrepancies.length}</Badge>}>
+          {discrepancies.length === 0 ? (
+            <div className="notice ok">No discrepancies detected between internal state and external tracks.</div>
+          ) : (
+            discrepancies.slice(0, 8).map((d) => (
+              <div key={`${d.taskId}-${d.code}`} className={`notice ${d.severity === 'high' ? 'danger' : 'warn'}`} style={{ marginBottom: 8 }}>
+                <strong>{d.taskTitle}</strong> <Badge color="purple">{d.code}</Badge>
+                <div className="faint">{d.message}</div>
+              </div>
+            ))
+          )}
+          <div className="faint">Detection is advisory — the owner decides which side is right.</div>
+        </Card>
+      </div>
     </div>
   );
 }

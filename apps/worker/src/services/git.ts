@@ -185,3 +185,45 @@ export class GitService {
     return /(^|\s)(reset\s+--hard|clean\s+-[a-z]*f|push\s+--force|push\s+-f\b|branch\s+-D)/.test(joined);
   }
 }
+
+export interface OpenResult {
+  ok: boolean;
+  method: string;
+  error?: string;
+}
+
+/**
+ * Open a registered repository in its configured IDE or terminal.
+ * IDE launches are audited local conveniences; terminal launches require
+ * approval (a shell is a consequential execution surface).
+ */
+export async function openInIde(localPath: string): Promise<OpenResult> {
+  const candidates: Array<[string, string[]]> =
+    process.platform === 'win32'
+      ? [['code', [localPath]], ['idea', [localPath]], ['start', ['', localPath]]]
+      : [['code', [localPath]], ['idea', [localPath]], ['xdg-open', [localPath]]];
+  for (const [cmd, args] of candidates) {
+    try {
+      await execFileAsync(cmd, args, { timeout: 8_000 });
+      return { ok: true, method: cmd };
+    } catch {
+      // try next candidate
+    }
+  }
+  return { ok: false, method: 'none', error: 'No configured IDE found (tried code/idea/platform opener)' };
+}
+
+export async function openInTerminal(localPath: string): Promise<OpenResult> {
+  try {
+    const cmd: [string, string[]] =
+      process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', 'cmd', '/k', `cd /d "${localPath}"`]]
+        : process.platform === 'darwin'
+          ? ['open', ['-a', 'Terminal', localPath]]
+          : ['x-terminal-emulator', ['--working-directory', localPath]];
+    await execFileAsync(cmd[0], cmd[1], { timeout: 8_000 });
+    return { ok: true, method: cmd[0] };
+  } catch (err) {
+    return { ok: false, method: 'terminal', error: err instanceof Error ? err.message : String(err) };
+  }
+}

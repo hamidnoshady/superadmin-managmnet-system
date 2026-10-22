@@ -17,6 +17,10 @@ export interface StartRunInput {
   budgetSeconds?: number;
   /** Command for the generic CLI adapter (read-only evidence command). */
   command?: string;
+  /** Retry chain support. */
+  attempt?: number;
+  maxAttempts?: number;
+  retryOf?: string | null;
 }
 
 /**
@@ -57,6 +61,60 @@ export class RunService {
       });
     }
     return rows.length;
+  }
+
+  /**
+   * Bounded budgets: running/queued runs that exceed their time budget become
+   * `timeout` — a visible failure state, never a silent success.
+   */
+  enforceTimeouts(now: Date = new Date()): number {
+    const rows = this.db.query<{ id: string; started_at: string | null; created_at: string; budget_seconds: number }>(
+      `SELECT id, started_at, created_at, budget_seconds FROM runs WHERE status IN ('running','queued')`,
+    );
+    let timedOut = 0;
+    for (const row of rows) {
+      const started = new Date(row.started_at ?? row.created_at).getTime();
+      const deadline = started + Number(row.budget_seconds) * 1000;
+      if (now.getTime() > deadline) {
+        this.db.run(
+          `UPDATE runs SET status = 'timeout', finished_at = ?, error = 'Run exceeded its time budget and was stopped' WHERE id = ?`,
+          nowIso(), row.id,
+        );
+        this.addEvent(row.id, 'warn', `Run exceeded budget of ${row.budget_seconds}s and was marked timeout`);
+        timedOut += 1;
+      }
+    }
+    return timedOut;
+  }
+
+  /** Bounded retries: spawn a follow-up run in the same chain. */
+  async retry(runId: string, actor: string): Promise<{ ok: boolean; run?: Run; error?: string }> {
+    const prior = this.get(runId);
+    if (!prior) return { ok: false, error: 'Run not found' };
+    if (!['failed', 'timeout', 'interrupted'].includes(prior.status)) {
+      return { ok: false, error: `Only failed/timeout/interrupted runs can be retried (run is ${prior.status})` };
+    }
+    const attempt = (prior.attempt ?? 1) + 1;
+    const maxAttempts = prior.maxAttempts ?? 1;
+    if (attempt > maxAttempts) {
+      return { ok: false, error: `Retry limit reached (${maxAttempts} attempt(s) allowed)` };
+    }
+    this.addEvent(runId, 'info', `Retrying as attempt ${attempt}/${maxAttempts}`);
+    return this.start({
+      taskId: prior.taskId,
+      providerId: prior.providerId ?? '',
+      repoId: prior.repoId,
+      stage: prior.stage,
+      budgetSeconds: prior.budgetSeconds,
+      attempt,
+      maxAttempts,
+      retryOf: runId,
+    }, actor);
+  }
+
+  setReviewVerdict(runId: string, verdict: 'approve' | 'request_changes' | 'needs_human', summary: string): void {
+    this.db.run('UPDATE runs SET review_verdict = ? WHERE id = ?', verdict, runId);
+    this.addEvent(runId, 'evidence', `Independent review verdict: ${verdict} — ${summary}`);
   }
 
   list(limit = 100): Run[] {
@@ -112,12 +170,17 @@ export class RunService {
       finishedAt: null,
       createdAt: now,
       recovered: false,
+      attempt: input.attempt ?? 1,
+      maxAttempts: input.maxAttempts ?? 1,
+      retryOf: input.retryOf ?? null,
+      reviewVerdict: null,
     };
     this.db.run(
-      `INSERT INTO runs (id, task_id, provider_id, repo_id, stage, status, branch_name, worktree_path, changed_files, exit_code, error, budget_seconds, started_at, finished_at, created_at, recovered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO runs (id, task_id, provider_id, repo_id, stage, status, branch_name, worktree_path, changed_files, exit_code, error, budget_seconds, started_at, finished_at, created_at, recovered, attempt, max_attempts, retry_of, review_verdict)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       run.id, run.taskId, run.providerId, run.repoId, run.stage, run.status, run.branchName, run.worktreePath,
       JSON.stringify(run.changedFiles), run.exitCode, run.error, run.budgetSeconds, run.startedAt, run.finishedAt, run.createdAt, 0,
+      run.attempt, run.maxAttempts, run.retryOf, run.reviewVerdict,
     );
     this.addEvent(runId, 'info', `Run queued with provider "${provider.name}" (${provider.status})`);
     if (run.taskId) {
@@ -131,26 +194,30 @@ export class RunService {
   }
 
   private async execute(run: Run, provider: Provider, command: string | undefined, actor: string): Promise<void> {
-    this.db.run(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ?`, nowIso(), run.id);
-    this.addEvent(run.id, 'status', 'Running');
-
-    // Isolated worktree for coding runs on a registered repository.
-    if (run.repoId && (provider.capabilities.filesystem || provider.capabilities.terminal)) {
-      const repo = this.db.queryOne<{ local_path: string }>('SELECT local_path FROM repositories WHERE id = ?', run.repoId);
-      if (repo) {
-        const branchName = `agent/${run.id}`;
-        const worktreePath = path.join(CONFIG.worktreeDir, run.id);
-        const created = await this.git.createWorktree(String(repo.local_path), worktreePath, branchName);
-        if (created.ok) {
-          this.db.run('UPDATE runs SET branch_name = ?, worktree_path = ? WHERE id = ?', branchName, worktreePath, run.id);
-          this.addEvent(run.id, 'info', `Isolated worktree created at ${worktreePath} (branch ${branchName})`);
-        } else {
-          this.addEvent(run.id, 'warn', `Worktree creation failed: ${created.error ?? 'unknown'}`);
-        }
-      }
+    try {
+      this.db.run(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ?`, nowIso(), run.id);
+      this.addEvent(run.id, 'status', 'Running');
+    } catch {
+      return; // database closed (shutdown/test teardown) — nothing to persist
     }
 
     try {
+      // Isolated worktree for coding runs on a registered repository.
+      if (run.repoId && (provider.capabilities.filesystem || provider.capabilities.terminal)) {
+        const repo = this.db.queryOne<{ local_path: string }>('SELECT local_path FROM repositories WHERE id = ?', run.repoId);
+        if (repo) {
+          const branchName = `agent/${run.id}`;
+          const worktreePath = path.join(CONFIG.worktreeDir, run.id);
+          const created = await this.git.createWorktree(String(repo.local_path), worktreePath, branchName);
+          if (created.ok) {
+            this.db.run('UPDATE runs SET branch_name = ?, worktree_path = ? WHERE id = ?', branchName, worktreePath, run.id);
+            this.addEvent(run.id, 'info', `Isolated worktree created at ${worktreePath} (branch ${branchName})`);
+          } else {
+            this.addEvent(run.id, 'warn', `Worktree creation failed: ${created.error ?? 'unknown'}`);
+          }
+        }
+      }
+
       if (provider.key === 'generic-cli') {
         await this.executeGenericCli(run, provider, command);
       } else if (provider.status !== 'verified') {
@@ -165,13 +232,21 @@ export class RunService {
       }
     } catch (err) {
       const error = redact(err instanceof Error ? err.message : String(err)).redacted;
-      this.finish(run.id, 'failed', { error });
-      this.addEvent(run.id, 'error', error);
+      try {
+        this.finish(run.id, 'failed', { error });
+        this.addEvent(run.id, 'error', error);
+      } catch {
+        // database closed mid-run — the interrupted-run recovery covers this
+      }
     }
 
-    if (run.taskId) {
-      const final = this.get(run.id);
-      this.tasks.setExternalStatus(run.taskId, 'agent', final?.status === 'succeeded' ? 'passing' : 'failing', actor);
+    try {
+      if (run.taskId) {
+        const final = this.get(run.id);
+        this.tasks.setExternalStatus(run.taskId, 'agent', final?.status === 'succeeded' ? 'passing' : 'failing', actor);
+      }
+    } catch {
+      // ignore shutdown races
     }
     void provider;
   }
@@ -268,5 +343,9 @@ export function toRun(row: Record<string, unknown>): Run {
     finishedAt: (row.finished_at as string) ?? null,
     createdAt: String(row.created_at),
     recovered: Number(row.recovered ?? 0) === 1,
+    attempt: Number(row.attempt ?? 1),
+    maxAttempts: Number(row.max_attempts ?? 1),
+    retryOf: (row.retry_of as string) ?? null,
+    reviewVerdict: (row.review_verdict as Run['reviewVerdict']) ?? null,
   };
 }

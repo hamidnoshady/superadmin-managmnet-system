@@ -30,6 +30,36 @@ export default function Runs(): JSX.Element {
     if (detail?.run.id === id) openRun(id);
   };
 
+  const retry = async (id: string) => {
+    const result = await api.retryRun(id);
+    setMessage(result.ok ? `Retry queued as attempt ${result.run?.attempt}.` : `Retry refused: ${result.error}`);
+    load();
+  };
+
+  const runTests = async (id: string) => {
+    const result = await api.runTests(id);
+    setMessage(`Tests: ${result.summary}${result.error ? ` (${result.error})` : ''}`);
+    openRun(id);
+  };
+
+  const runReview = async (id: string) => {
+    const result = await api.reviewRun(id);
+    if (result.report) {
+      setMessage(`Review verdict: ${result.report.verdict} — ${result.report.summary}`);
+    } else {
+      setMessage(`Review failed: ${result.error}`);
+    }
+    openRun(id);
+    load();
+  };
+
+  const preparePr = async (id: string) => {
+    const result = await api.preparePr(id);
+    setMessage(result.ok
+      ? `PR prepared ("${result.title}"). Creating it on GitHub requires approval (request ${result.approvalId} pending in Settings).`
+      : `PR preparation failed: ${result.error}`);
+  };
+
   return (
     <div>
       <SectionTitle
@@ -51,7 +81,9 @@ export default function Runs(): JSX.Element {
                   <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => openRun(r.id)}>
                     <td className="mono">
                       {r.id.slice(0, 14)}…
+                      {r.attempt > 1 && <Badge color="blue">attempt {r.attempt}/{r.maxAttempts}</Badge>}
                       {r.recovered && <Badge color="amber">recovered</Badge>}
+                      {r.reviewVerdict && <Badge color={r.reviewVerdict === 'approve' ? 'green' : r.reviewVerdict === 'request_changes' ? 'red' : 'amber'}>review: {r.reviewVerdict}</Badge>}
                     </td>
                     <td className="faint">{r.stage}</td>
                     <td><Badge color={RUN_COLORS[r.status] ?? 'gray'} dot>{r.status}</Badge></td>
@@ -59,6 +91,9 @@ export default function Runs(): JSX.Element {
                     <td>
                       {['queued', 'running'].includes(r.status) && (
                         <button className="btn small danger" onClick={(e) => { e.stopPropagation(); cancel(r.id); }}>Cancel</button>
+                      )}
+                      {['failed', 'timeout', 'interrupted'].includes(r.status) && r.attempt < r.maxAttempts && (
+                        <button className="btn small" onClick={(e) => { e.stopPropagation(); retry(r.id); }}>Retry</button>
                       )}
                     </td>
                   </tr>
@@ -110,8 +145,23 @@ export default function Runs(): JSX.Element {
                 {['queued', 'running'].includes(detail.run.status) && (
                   <button className="btn small danger" onClick={() => cancel(detail.run.id)}>Cancel run</button>
                 )}
+                {['failed', 'timeout', 'interrupted'].includes(detail.run.status) && detail.run.attempt < detail.run.maxAttempts && (
+                  <button className="btn small" onClick={() => retry(detail.run.id)}>Retry ({detail.run.attempt}/{detail.run.maxAttempts})</button>
+                )}
+                {detail.run.status === 'succeeded' && (
+                  <>
+                    <button className="btn small" onClick={() => runTests(detail.run.id)}>Run tests → evidence</button>
+                    <button className="btn small" onClick={() => runReview(detail.run.id)}>Independent review</button>
+                    <button className="btn small primary" onClick={() => preparePr(detail.run.id)}>Prepare PR (needs approval)</button>
+                  </>
+                )}
                 <button className="btn small" onClick={() => openRun(detail.run.id)}>Reload events</button>
               </div>
+              {detail.run.reviewVerdict && (
+                <div className={`notice ${detail.run.reviewVerdict === 'approve' ? 'ok' : detail.run.reviewVerdict === 'request_changes' ? 'danger' : 'warn'}`} style={{ marginTop: 10 }}>
+                  Independent review: <strong>{detail.run.reviewVerdict}</strong>
+                </div>
+              )}
             </>
           )}
         </Card>

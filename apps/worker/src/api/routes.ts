@@ -360,6 +360,197 @@ export function buildRoutes(services: AppServices): Router {
     res.status(result.ok ? 200 : 400).json(result);
   }));
 
+  // ---- Coordinator (Phase 3) ------------------------------------------------------
+
+  router.get('/coordinator/recommend/:taskId', wrap((req, res) => {
+    res.json(services.coordinator.recommend(req.params.taskId));
+  }));
+
+  router.post('/coordinator/assign', wrap((req, res) => {
+    const result = services.coordinator.assign({
+      taskId: String(req.body?.taskId ?? ''),
+      providerId: req.body?.providerId ?? null,
+      repoId: req.body?.repoId ?? null,
+      budgetSeconds: req.body?.budgetSeconds,
+      maxAttempts: req.body?.maxAttempts,
+      acceptanceCriteria: req.body?.acceptanceCriteria,
+    }, actorOf(req));
+    res.status(result.ok ? 200 : 400).json(result);
+  }));
+
+  router.post('/coordinator/start', wrap(async (req, res) => {
+    const result = await services.coordinator.startGuardedRun({
+      taskId: req.body?.taskId ?? null,
+      providerId: String(req.body?.providerId ?? ''),
+      repoId: req.body?.repoId ?? null,
+      stage: req.body?.stage,
+      budgetSeconds: req.body?.budgetSeconds,
+      maxAttempts: req.body?.maxAttempts,
+      files: req.body?.files,
+    }, actorOf(req));
+    res.status(result.ok ? 201 : 400).json(result);
+  }));
+
+  router.post('/coordinator/runs/:id/tests', wrap(async (req, res) => {
+    const result = await services.coordinator.runTests(req.params.id, req.body?.command);
+    res.json(result);
+  }));
+
+  router.post('/coordinator/runs/:id/review', wrap(async (req, res) => {
+    const result = await services.coordinator.review(req.params.id);
+    res.json(result);
+  }));
+
+  router.post('/coordinator/runs/:id/pr', wrap((req, res) => {
+    const result = services.coordinator.preparePr(req.params.id);
+    res.status(result.ok ? 201 : 400).json(result);
+  }));
+
+  router.get('/coordinator/preparations', wrap((_req, res) => {
+    res.json(services.coordinator.listPreparations());
+  }));
+
+  router.post('/runs/:id/retry', wrap(async (req, res) => {
+    services.runs.enforceTimeouts();
+    const retry = await services.runs.retry(req.params.id, actorOf(req));
+    res.status(retry.ok ? 201 : 400).json(retry);
+  }));
+
+  /**
+   * Execute an approved PR creation. Re-checks the approval gate at execution time.
+   */
+  router.post('/github/create-pr', wrap(async (req, res) => {
+    const actor = actorOf(req);
+    const gate = services.approvals.checkGate('github_write', req.body?.approvalId ?? null);
+    if (!gate.ok) {
+      services.audit.record({ actor, action: 'github.pr_create', targetKind: 'api', outcome: 'denied', detail: gate.reason ?? null });
+      res.status(403).json({ error: gate.reason, requiresApproval: true });
+      return;
+    }
+    const repo = services.registry.getRepository(String(req.body?.repoId ?? ''));
+    if (!repo) { res.status(404).json({ error: 'Repository not found' }); return; }
+    const result = await github.createPullRequest(
+      repo,
+      String(req.body?.title ?? ''),
+      String(req.body?.body ?? ''),
+      String(req.body?.head ?? ''),
+      String(req.body?.base ?? repo.defaultBranch ?? 'main'),
+      actor,
+    );
+    res.status(result.ok ? 201 : 400).json(result);
+  }));
+
+  // ---- AI Brain pipeline (Phase 2/3) ------------------------------------------
+
+  router.post('/brain/pipeline', wrap(async (req, res) => {
+    const result = await services.brain.runPipeline(String(req.body?.taskId ?? ''), {
+      providerId: req.body?.providerId ?? null,
+      repoId: req.body?.repoId ?? null,
+      autonomyLevel: req.body?.autonomyLevel,
+      actor: actorOf(req),
+    });
+    res.status(result.ok ? 201 : 400).json(result);
+  }));
+
+  router.get('/tasks/:id/findings', wrap((req, res) => {
+    res.json(services.coordinator.listFindings(req.params.id));
+  }));
+
+  router.post('/tasks/:id/dependencies', wrap((req, res) => {
+    const result = services.tasks.addDependency(req.params.id, String(req.body?.dependsOnTaskId ?? ''), actorOf(req), req.body?.kind);
+    res.status(result.ok ? 201 : 400).json(result);
+  }));
+
+  router.get('/tasks/:id/dependencies', wrap((req, res) => {
+    res.json({
+      dependencies: services.tasks.listDependencies(req.params.id),
+      unmet: services.tasks.unmetDependencies(req.params.id),
+    });
+  }));
+
+  // ---- Biza Miz ingestion (Phase 2) ---------------------------------------------
+
+  router.get('/ingest/biza-miz', wrap((_req, res) => res.json(services.ingest.getConfig())));
+
+  router.put('/ingest/biza-miz', wrap((req, res) => {
+    res.json(services.ingest.saveConfig(req.body ?? {}, actorOf(req)));
+  }));
+
+  router.get('/ingest/check', wrap(async (_req, res) => {
+    res.json(await services.ingest.checkConnection());
+  }));
+
+  router.post('/ingest/api', wrap(async (req, res) => {
+    res.json(await services.ingest.ingestFromApi(actorOf(req)));
+  }));
+
+  router.post('/ingest/webhook', wrap((req, res) => {
+    res.json(services.ingest.ingestFromWebhook(req.headers as Record<string, string | undefined>, req.body ?? {}, actorOf(req)));
+  }));
+
+  router.post('/ingest/import', wrap((req, res) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    res.json(services.ingest.importBatch(items, 'import', String(req.body?.source ?? 'manual-import'), actorOf(req)));
+  }));
+
+  router.get('/ingest/batches', wrap((_req, res) => res.json(services.ingest.listBatches())));
+
+  // ---- Engineering health & release readiness (Phase 4) -------------------------
+
+  router.get('/engineering/health', wrap((_req, res) => {
+    res.json(services.health.compute());
+  }));
+
+  // ---- Backup / restore / workspace bundle (Phase 4) ----------------------------
+
+  router.get('/backups', wrap((_req, res) => res.json(services.backup.list())));
+
+  router.post('/backups/export', wrap(async (req, res) => {
+    res.json(await services.backup.exportBundle(actorOf(req)));
+  }));
+
+  router.post('/backups/validate', wrap((req, res) => {
+    res.json(services.backup.validate(String(req.body?.file ?? '')));
+  }));
+
+  router.post('/backups/restore', wrap((req, res) => {
+    const actor = actorOf(req);
+    const gate = services.approvals.checkGate('restore_backup', req.body?.approvalId ?? null);
+    if (!gate.ok) {
+      services.audit.record({ actor, action: 'backup.restore', targetKind: 'api', outcome: 'denied', detail: gate.reason ?? null });
+      res.status(403).json({ error: gate.reason, requiresApproval: true });
+      return;
+    }
+    res.json(services.backup.restore(String(req.body?.file ?? ''), actor));
+  }));
+
+  // ---- Open repository (IDE / terminal) ------------------------------------------
+
+  router.post('/repositories/:id/open', wrap(async (req, res) => {
+    const actor = actorOf(req);
+    const repo = services.registry.getRepository(req.params.id);
+    if (!repo) { res.status(404).json({ error: 'Repository not found' }); return; }
+    const target = req.body?.target === 'terminal' ? 'terminal' : 'ide';
+
+    // A shell is a consequential execution surface — terminal launches are approval-gated.
+    if (target === 'terminal') {
+      const gate = services.approvals.checkGate('external_write', req.body?.approvalId ?? null);
+      if (!gate.ok) {
+        services.audit.record({ actor, action: 'repo.open_terminal', targetKind: 'repository', targetId: repo.id, outcome: 'denied', detail: gate.reason ?? null });
+        res.status(403).json({ error: gate.reason, requiresApproval: true });
+        return;
+      }
+    }
+
+    const { openInIde, openInTerminal } = await import('../services/git.js');
+    const result = target === 'terminal' ? await openInTerminal(repo.localPath) : await openInIde(repo.localPath);
+    services.audit.record({
+      actor, action: `repo.open_${target}`, targetKind: 'repository', targetId: repo.id,
+      outcome: result.ok ? 'ok' : 'error', detail: result.ok ? `opened via ${result.method}` : result.error ?? 'failed',
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  }));
+
   // ---- Seed (demo data) --------------------------------------------------------------------------
 
   router.post('/seed', wrap(async (req, res) => {

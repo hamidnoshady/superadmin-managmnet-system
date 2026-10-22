@@ -29,6 +29,7 @@ export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = {
     'external_write',
     'llm_send',
     'policy_change',
+    'restore_backup',
   ],
   expireHours: 72,
 };
@@ -46,6 +47,7 @@ export const APPROVAL_KIND_LABELS: Record<ApprovalKind, string> = {
   external_write: 'External write (any other system)',
   llm_send: 'Send content to external LLM provider',
   policy_change: 'Change security/approval policy',
+  restore_backup: 'Restore local state from a backup (destructive)',
 };
 
 export type ApprovalDecision =

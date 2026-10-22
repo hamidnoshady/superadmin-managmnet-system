@@ -33,8 +33,29 @@ export class Database {
     const row = this.queryOne<{ user_version: number }>('PRAGMA user_version');
     const current = Number(row?.user_version ?? 0);
     if (current < SCHEMA_VERSION) {
-      // Future migrations run here in order (additive, never destructive).
+      // Additive migrations only — never drop, rename, or rewrite user data.
+      this.addColumnsIfMissing('runs', [
+        ['attempt', 'INTEGER NOT NULL DEFAULT 1'],
+        ['max_attempts', 'INTEGER NOT NULL DEFAULT 1'],
+        ['retry_of', 'TEXT'],
+        ['review_verdict', 'TEXT'],
+      ]);
+      this.addColumnsIfMissing('projects', [
+        ['environment_refs', "TEXT NOT NULL DEFAULT '[]'"],
+      ]);
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    }
+  }
+
+  /** Additive schema migration helper (idempotent). */
+  private addColumnsIfMissing(table: string, columns: Array<[string, string]>): void {
+    const existing = new Set(
+      this.query<{ name: string }>(`PRAGMA table_info(${table})`).map((c) => c.name),
+    );
+    for (const [name, definition] of columns) {
+      if (!existing.has(name)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+      }
     }
   }
 

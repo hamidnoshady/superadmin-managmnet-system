@@ -90,6 +90,28 @@ Packages:
 
 - Tauri packaging and Windows Credential Manager binding (documented, untested).
 - Real coding-agent execution for Claude Code / Codex / Arena (adapters refuse until
-  verified).
-- Biza Miz authenticated ingestion (manual intake only until an API/webhook is confirmed).
-- Automatic assignment recommendations (needs reliable capability data first).
+  verified) — the coordinator, worktrees, retries, tests, review and PR prep around them
+  are implemented and tested.
+- Live Biza Miz ingestion flip-on (channels implemented: signed webhook receiver,
+  authenticated API pull, JSON import; they refuse unverified/unconfigured input).
+- Remote multi-device sync service (explicitly deferred by the issue); the workspace
+  bundle export/import is the local-first handoff primitive.
+
+## Phase 2–4 components (delivered)
+
+- **AI Brain (`services/brain.ts`)** — pipeline over the shared findings graph:
+  triage → investigation → planning → approval gate. Untrusted content is fenced
+  (`core/untrusted.ts`) and injection attempts are recorded as findings. LLM
+  participation is disclosed (`usedLlm: false` when no verified provider exists).
+- **Coordinator (`services/coordinator.ts`)** — assignment with capability-based
+  recommendations, project policy enforcement, conflict detection (same-task active
+  runs refused; overlapping files warned), dependency gating, budget timeouts, bounded
+  retries, test execution mapped to acceptance criteria, independent review
+  (`core/review.ts`), PR preparation (`core/issueDraft.ts`) with approval-gated creation.
+- **Ingestion (`services/ingest.ts`)** — Biza Miz channels: API pull (capability-checked),
+  signed webhook (`x-dcc-webhook-secret`), JSON import; all through the redaction
+  pipeline with batch records.
+- **Health (`services/health.ts`)** — cycle time, run success rate, evidence coverage,
+  discrepancy detection (`core/discrepancy.ts`), release readiness verdict.
+- **Backup (`services/backup.ts`)** — SQLite online-backup bundles + manifests,
+  validation before restore, approval-gated destructive restore.

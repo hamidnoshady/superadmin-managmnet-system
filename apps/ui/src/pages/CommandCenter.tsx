@@ -1,22 +1,23 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { DashboardSummary, Task } from '@dcc/core';
-import { api } from '../api';
+import { api, type EngineeringHealth } from '../api';
 import { Badge, Card, EmptyState, SectionTitle, SourcedStatusRow, TaskBadge, timeAgo } from '../components';
 
 export default function CommandCenter(): JSX.Element {
   const [data, setData] = useState<DashboardSummary | null>(null);
+  const [health, setHealth] = useState<EngineeringHealth | null>(null);
   const [stale, setStale] = useState<Array<{ id: string; kind: string; title: string; staleReason: string; activityStatus: string }>>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const load = () => {
-    Promise.all([api.dashboard(), api.stale(), api.tasks()])
-      .then(([d, s, t]) => { setData(d); setStale(s); setTasks(t); setError(null); })
+    Promise.all([api.dashboard(), api.stale(), api.tasks(), api.engineeringHealth()])
+      .then(([d, s, t, h]) => { setData(d); setStale(s); setTasks(t); setHealth(h); setError(null); })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };
 
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
 
   if (error) return <div className="notice danger">Worker unreachable: {error}. Start the worker with <code>npm run dev:worker</code>.</div>;
   if (!data) return <EmptyState>Loading command center…</EmptyState>;
@@ -140,6 +141,78 @@ export default function CommandCenter(): JSX.Element {
           </div>
         </Card>
       </div>
+
+      {/* Row 4: engineering health + release readiness + discrepancies */}
+      {health && (
+        <>
+          <SectionTitle title="Engineering health" hint="computed from the local evidence store — aggregates are inferred" />
+          <div className="grid cols-3">
+            <Card title="Delivery">
+              <div className="stat-strip">
+                <div className="stat-box"><div className="n">{health.cycle.completedTasks}</div><div className="l">completed</div></div>
+                <div className="stat-box"><div className="n">{health.cycle.avgCycleHours != null ? `${health.cycle.avgCycleHours}h` : '—'}</div><div className="l">avg cycle time</div></div>
+                <div className="stat-box"><div className="n">{Math.round(health.cycle.completionRate * 100)}%</div><div className="l">completion rate</div></div>
+              </div>
+              <div className="divider" />
+              <div className="stat-strip">
+                <div className="stat-box"><div className="n">{Math.round(health.runs.successRate * 100)}%</div><div className="l">run success ({health.runs.succeeded}/{health.runs.total})</div></div>
+                <div className="stat-box"><div className="n">{health.runs.timeout + health.runs.interrupted}</div><div className="l">timeout + interrupted</div></div>
+              </div>
+            </Card>
+
+            <Card title="Quality">
+              <div className="stat-strip">
+                <div className="stat-box"><div className="n">{Math.round(health.quality.evidenceCoverage * 100)}%</div><div className="l">evidence coverage</div></div>
+                <div className="stat-box"><div className="n">{health.quality.failingTestTasks}</div><div className="l">failing tests</div></div>
+                <div className="stat-box"><div className="n">{health.quality.reviewApprovals}/{health.quality.reviewRequestsChanges}</div><div className="l">review approve / changes</div></div>
+              </div>
+              <div className="divider" />
+              {health.items.map((item) => (
+                <SourcedStatusRow
+                  key={item.label}
+                  item={item as never}
+                />
+              ))}
+            </Card>
+
+            <Card
+              title="Release readiness"
+              right={<Badge color={health.releaseReadiness.verdict === 'ready' ? 'green' : 'red'} dot>{health.releaseReadiness.verdict}</Badge>}
+            >
+              <div className="faint">
+                {health.releaseReadiness.readyForMerge} task(s) ready for merge · {health.releaseReadiness.ciConcerns} CI concern(s)
+              </div>
+              <div className="divider" />
+              {health.releaseReadiness.releaseBlockers.length === 0 ? (
+                <div className="notice ok">No active release blockers detected.</div>
+              ) : (
+                <div className="link-list">
+                  {health.releaseReadiness.releaseBlockers.map((b) => (
+                    <div key={b.taskId} className="notice danger">
+                      <strong>{b.title}</strong>
+                      <div className="faint">{b.reason}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          </div>
+
+          {health.discrepancies.length > 0 && (
+            <>
+              <SectionTitle title="Status discrepancies" hint="internal state vs GitHub/agent/test/PR tracks — advisory" right={<Badge color="amber">{health.discrepancies.length}</Badge>} />
+              <Card>
+                {health.discrepancies.slice(0, 6).map((d) => (
+                  <div key={`${d.taskId}-${d.code}`} className={`notice ${d.severity === 'high' ? 'danger' : 'warn'}`} style={{ marginBottom: 8 }}>
+                    <strong>{d.taskTitle}</strong> <Badge color="purple">{d.code}</Badge>
+                    <div className="faint">{d.message}</div>
+                  </div>
+                ))}
+              </Card>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }

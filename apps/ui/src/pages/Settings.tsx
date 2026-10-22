@@ -10,11 +10,15 @@ export default function Settings(): JSX.Element {
   const [actor, setActor] = useState(actorName());
   const [message, setMessage] = useState<string | null>(null);
   const [scanRootInput, setScanRootInput] = useState('');
+  const [backups, setBackups] = useState<Array<{ file: string; createdAt: string; sizeBytes: number; manifest: Record<string, unknown> }>>([]);
+  const [ingestCfg, setIngestCfg] = useState<{ apiUrl: string; authEnv: string; webhookSecretEnv: string } | null>(null);
 
   const load = () => {
     api.settings().then(setSettings);
     api.approvals().then(setApprovals);
     api.audit().then(setAudit);
+    api.backups().then(setBackups).catch(() => setBackups([]));
+    api.ingestConfig().then(setIngestCfg).catch(() => setIngestCfg(null));
   };
   useEffect(load, []);
 
@@ -99,7 +103,7 @@ export default function Settings(): JSX.Element {
           <div className="faint" style={{ marginBottom: 10 }}>
             Removing a gate is a consequential change: it requires an approved <code>policy_change</code> request first.
           </div>
-          {['issue_create', 'issue_close', 'issue_comment', 'github_write', 'merge', 'release', 'deploy', 'branch_switch', 'git_destructive', 'external_write', 'llm_send', 'policy_change'].map((kind) => {
+          {['issue_create', 'issue_close', 'issue_comment', 'github_write', 'merge', 'release', 'deploy', 'branch_switch', 'git_destructive', 'external_write', 'llm_send', 'policy_change', 'restore_backup'].map((kind) => {
             const required = settings.approvalPolicy.required.includes(kind as never);
             return (
               <label key={kind} className="row" style={{ justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid rgba(36,50,86,0.5)', cursor: 'pointer' }}>
@@ -108,6 +112,71 @@ export default function Settings(): JSX.Element {
               </label>
             );
           })}
+        </Card>
+      </div>
+
+      <SectionTitle title="Backup & restore / workspace bundles" hint="local-first: the bundle doubles as the multi-device handoff primitive" />
+      <div className="grid cols-2">
+        <Card title="Backups" right={<button className="btn small primary" onClick={async () => { const b = await api.exportBackup(); setMessage(`Backup exported: ${b.file.split('/').pop()} (${Math.round(b.sizeBytes / 1024)} KB)`); load(); }}>Export now</button>}>
+          {backups.length === 0 ? (
+            <div className="faint">No backups yet. Exports are consistent SQLite snapshots + a manifest — secrets never live in the database.</div>
+          ) : (
+            backups.slice(0, 6).map((b) => (
+              <div key={b.file} className="row" style={{ justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(36,50,86,0.5)' }}>
+                <div>
+                  <div className="mono" style={{ fontSize: 11 }}>{b.file.split('/').pop()}</div>
+                  <div className="faint">{timeAgo(b.createdAt)} · {Math.round(b.sizeBytes / 1024)} KB · {JSON.stringify(b.manifest.counts ?? {})}</div>
+                </div>
+                <button
+                  className="btn small danger"
+                  onClick={async () => {
+                    const result = await api.restoreBackup(b.file);
+                    if (result.requiresApproval) {
+                      setMessage('Restore requires approval — a restore_backup request is now needed in the approval queue before it can run.');
+                      const req = await api.approvals().then((all) => all.find((a) => a.kind === 'restore_backup' && a.status === 'pending'));
+                      void req;
+                    } else {
+                      setMessage(result.note ?? result.error ?? 'done');
+                    }
+                  }}
+                >
+                  Restore (gated)
+                </button>
+              </div>
+            ))
+          )}
+          <div className="faint" style={{ marginTop: 8 }}>
+            Restore overwrites local state and therefore requires an approved <code>restore_backup</code> request. A worker restart is needed after restore.
+          </div>
+        </Card>
+
+        <Card title="Biza Miz ingestion config (Phase 2)">
+          {ingestCfg && (
+            <>
+              <div className="field">
+                <label>API base URL (empty = unconfigured → manual intake only)</label>
+                <input
+                  value={ingestCfg.apiUrl}
+                  onChange={(e) => setIngestCfg({ ...ingestCfg, apiUrl: e.target.value })}
+                  onBlur={async () => { await api.saveIngestConfig(ingestCfg); setMessage('Ingestion config saved (env var names only — no secrets stored).'); }}
+                  placeholder="https://support.example.com/api"
+                />
+              </div>
+              <div className="form-row">
+                <div className="field">
+                  <label>Token env var name</label>
+                  <input value={ingestCfg.authEnv} onChange={(e) => setIngestCfg({ ...ingestCfg, authEnv: e.target.value })} />
+                </div>
+                <div className="field">
+                  <label>Webhook secret env var name</label>
+                  <input value={ingestCfg.webhookSecretEnv} onChange={(e) => setIngestCfg({ ...ingestCfg, webhookSecretEnv: e.target.value })} />
+                </div>
+              </div>
+              <button className="btn small" onClick={async () => { await api.saveIngestConfig(ingestCfg); const c = await api.ingestCheck(); setMessage(`Connection check: ${c.status} — ${c.notes}`); }}>
+                Save & check connection
+              </button>
+            </>
+          )}
         </Card>
       </div>
 

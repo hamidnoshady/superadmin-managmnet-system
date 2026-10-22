@@ -16,6 +16,11 @@ import { ProviderService } from './providers.js';
 import { RunService } from './runs.js';
 import { SupportService } from './support.js';
 import { ApprovalService } from './approvals.js';
+import { CoordinatorService } from './coordinator.js';
+import { BrainService } from './brain.js';
+import { IngestService } from './ingest.js';
+import { HealthService } from './health.js';
+import { BackupService } from './backup.js';
 
 export interface AppServices {
   db: Database;
@@ -27,6 +32,11 @@ export interface AppServices {
   runs: RunService;
   support: SupportService;
   approvals: ApprovalService;
+  coordinator: CoordinatorService;
+  brain: BrainService;
+  ingest: IngestService;
+  health: HealthService;
+  backup: BackupService;
 }
 
 export function createServices(dbPath = CONFIG.dbPath): AppServices {
@@ -40,8 +50,13 @@ export function createServices(dbPath = CONFIG.dbPath): AppServices {
   const runs = new RunService(db, audit, providers, tasks);
   const support = new SupportService(db, audit, process.env.DCC_TENANT_SALT ?? 'dcc-local-tenant-salt');
   const approvals = new ApprovalService(db, audit, settings.get().approvalPolicy);
+  const coordinator = new CoordinatorService(db, audit, tasks, runs, providers, registry);
+  const brain = new BrainService(db, audit, tasks, runs, coordinator);
+  const ingest = new IngestService(db, audit, support);
+  const health = new HealthService(db, settings);
+  const backup = new BackupService(db, audit);
   providers.ensureSeeded();
-  return { db, audit, settings, registry, tasks, providers, runs, support, approvals };
+  return { db, audit, settings, registry, tasks, providers, runs, support, approvals, coordinator, brain, ingest, health, backup };
 }
 
 export function isEmpty(db: Database): boolean {
@@ -68,6 +83,9 @@ export async function seed(services: AppServices, actor = 'system:seed'): Promis
         allowTerminal: true,
         maxRunMinutes: 30,
         allowedProviders: ['generic-cli', 'github-gh-cli'],
+        autonomyLevel: 1,
+        requiredStages: [],
+        maxRetries: 2,
       },
     },
     actor,
@@ -161,6 +179,47 @@ export async function seed(services: AppServices, actor = 'system:seed'): Promis
     source: 'command',
   });
 
+  // Demo: discrepancy detection (completed internally while GitHub is still open).
+  const t6 = tasks.create({
+    title: 'Docs: document the workspace bundle as multi-device handoff primitive',
+    description: 'Export/import doubles as backup and multi-device sync until a remote service exists.',
+    projectId: project.id,
+    severity: 'low',
+    acceptanceCriteria: ['Bundle documented in architecture docs'],
+    internalStatus: 'Incoming',
+  }, actor);
+  // Walk it to Completed with evidence, leaving the GitHub track open on purpose.
+  for (const to of ['Triage', 'Investigating', 'Planned', 'Waiting for Approval', 'Approved', 'In Development', 'Testing', 'Review', 'Ready for Merge'] as const) {
+    tasks.transition(t6.id, to, actor);
+  }
+  tasks.addEvidence({ taskId: t6.id, kind: 'note', summary: 'Documented in docs/architecture.md — bundle covers backup and multi-device handoff', source: 'manual' });
+  tasks.transition(t6.id, 'Completed', actor);
+  tasks.setExternalStatus(t6.id, 'github', 'open', actor); // deliberate discrepancy for the dashboard
+
+  // Demo: task graph — live ingestion is blocked on API verification (t2).
+  const t7 = tasks.create({
+    title: 'Enable live Biza Miz ingestion (API/webhook) once verified',
+    description: 'Wire the authenticated channel and switch from manual intake.',
+    projectId: project.id,
+    severity: 'high',
+    acceptanceCriteria: ['Ingestion channel verified end-to-end', 'Tenant isolation confirmed'],
+    internalStatus: 'Planned',
+  }, actor);
+  tasks.addDependency(t7.id, t2.id, actor);
+
+  // Shared brain findings for the demo task (evidence graph).
+  services.coordinator.recordFinding({
+    taskId: t7.id, stage: 'triage', kind: 'classification',
+    summary: 'Blocked on Biza Miz API verification — dependency edge recorded in the task graph.',
+    confidence: 'confirmed',
+  });
+  services.coordinator.recordFinding({
+    taskId: t7.id, stage: 'planning', kind: 'plan',
+    summary: 'Plan: verify API → enable webhook receiver → switch intake channel → redaction regression tests.',
+    detail: '1) confirm endpoint+permissions 2) set token env var 3) run /api/ingest/check 4) pull sample batch 5) verify redaction and tenant hashing',
+    confidence: 'inferred',
+  });
+
   console.log('[seed] Seeding support reports (redacted intake demo)…');
   const { report: sr1 } = support.create({
     title: 'Installation fails during update on Windows 11',
@@ -198,6 +257,9 @@ export async function seed(services: AppServices, actor = 'system:seed'): Promis
     severity: 'high',
   }, actor);
   support.triage(sr3.id, actor);
+
+  // Link the demo follow-up task to its originating support report.
+  tasks.link(t7.id, 'support_report', sr1.id, null, actor);
 
   console.log('[seed] Seeding runs with real evidence…');
   const run1 = await runs.start({

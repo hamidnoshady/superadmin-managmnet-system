@@ -10,8 +10,17 @@ export default function Support(): JSX.Element {
   const [message, setMessage] = useState<string | null>(null);
   const [redaction, setRedaction] = useState<Array<{ kind: string; count: number }> | null>(null);
   const [form, setForm] = useState({ title: '', body: '', productModule: '', appVersion: '', environment: 'production', tenantRef: '' });
+  const [ingestStatus, setIngestStatus] = useState<{ status: string; notes: string; checkedAt: string } | null>(null);
+  const [ingestCfg, setIngestCfg] = useState<{ apiUrl: string; authEnv: string; webhookSecretEnv: string } | null>(null);
+  const [batches, setBatches] = useState<Array<{ id: string; channel: string; source: string | null; imported: number; skipped: number; errors: string; created_at: string }>>([]);
+  const [importText, setImportText] = useState('');
 
-  const load = () => api.supportReports().then(setReports);
+  const load = () => {
+    api.supportReports().then(setReports);
+    api.ingestCheck().then(setIngestStatus).catch(() => setIngestStatus(null));
+    api.ingestConfig().then(setIngestCfg).catch(() => setIngestCfg(null));
+    api.ingestBatches().then(setBatches).catch(() => setBatches([]));
+  };
   useEffect(() => { load(); }, []);
 
   useEffect(() => {
@@ -66,7 +75,73 @@ export default function Support(): JSX.Element {
         </div>
       )}
 
-      <div className="grid cols-2">
+      <Card title="Ingestion channels">
+        <div className="grid cols-3">
+          <div>
+            <div className="row">
+              <Badge color={ingestStatus?.status === 'verified' ? 'green' : ingestStatus?.status === 'unconfigured' ? 'amber' : 'red'} dot>
+                API: {ingestStatus?.status ?? 'checking'}
+              </Badge>
+              <button className="btn small" onClick={async () => { const r = await api.ingestApi(); setMessage(r.note); load(); }}>Pull from API</button>
+            </div>
+            <div className="faint" style={{ marginTop: 8 }}>{ingestStatus?.notes}</div>
+            {ingestCfg && (
+              <div className="faint mono" style={{ marginTop: 6 }}>
+                url: {ingestCfg.apiUrl || '(unset)'}<br />
+                token env: {ingestCfg.authEnv} · webhook secret env: {ingestCfg.webhookSecretEnv}
+              </div>
+            )}
+          </div>
+          <div>
+            <Badge color="blue" dot>Webhook receiver</Badge>
+            <div className="faint" style={{ marginTop: 8 }}>
+              POST <span className="mono">/api/ingest/webhook</span> with header <span className="mono">x-dcc-webhook-secret</span>.
+              Unauthenticated payloads are rejected — configure the secret env var on the worker first.
+            </div>
+          </div>
+          <div>
+            <Badge color="purple" dot>Manual / import</Badge>
+            <div className="field" style={{ marginTop: 8 }}>
+              <textarea
+                style={{ minHeight: 64 }}
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder='[{"title":"…","body":"…","tenantRef":"TEN-1"}]'
+              />
+            </div>
+            <button
+              className="btn small"
+              disabled={!importText.trim()}
+              onClick={async () => {
+                try {
+                  const items = JSON.parse(importText);
+                  const r = await api.ingestImport(Array.isArray(items) ? items : [items], 'ui-import');
+                  setMessage(r.note);
+                  setImportText('');
+                  load();
+                } catch {
+                  setMessage('Import failed: invalid JSON');
+                }
+              }}
+            >
+              Import JSON (redacted)
+            </button>
+          </div>
+        </div>
+        {batches.length > 0 && (
+          <>
+            <div className="divider" />
+            <div className="faint">Recent ingestion batches:</div>
+            {batches.slice(0, 4).map((b) => (
+              <div key={b.id} className="faint" style={{ marginTop: 4 }}>
+                <span className="mono">{b.channel}</span> from {b.source ?? '—'} · imported {b.imported} · skipped {b.skipped} · {timeAgo(b.created_at)}
+              </div>
+            ))}
+          </>
+        )}
+      </Card>
+
+      <div className="grid cols-2" style={{ marginTop: 16 }}>
         <Card title="New report intake">
           <div className="field">
             <label>Title</label>

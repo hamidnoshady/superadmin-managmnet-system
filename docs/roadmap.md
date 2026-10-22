@@ -2,64 +2,69 @@
 
 ## Phase 0 — Discovery and integration verification
 
-**Status: core discovery done in-sandbox; 2 items require the owner's Windows machine.**
+**Status: core discovery done in-sandbox; items requiring the owner's environment marked.**
 
 - [x] Repository landscape + issue/PR inventory inspected before creating work
 - [x] Runtime/toolchain discovery (Node 22, git, gh auth, no Rust) documented
 - [x] Integration matrix produced with verified/unverified/unknown/unavailable states
 - [ ] Inspect existing app at `D:\Development\arena development managment` (owner-run; checklist in discovery.md)
-- [ ] Confirm Biza Miz API/webhook (owner)
+- [ ] Confirm Biza Miz API/webhook (owner) — ingestion channels are built and waiting for the verified endpoint
 - [ ] Confirm "Freebuf" identity (owner)
 - [ ] Decide minimum Windows versions/architectures (owner)
 
 ## Phase 1 — Useful command center ✅ (delivered)
 
-- [x] Desktop-shell UI (React + TS, 8 modules, Tauri-ready)
-- [x] Local persistence (SQLite via `node:sqlite`, WAL, versioned schema)
+- [x] Desktop-shell UI (React + TS, 8 modules, Tauri-ready) + global search
+- [x] Local persistence (SQLite via `node:sqlite`, WAL, versioned schema + additive migrations)
 - [x] Project & repository registry (manual registration + folder scan, never modifies targets)
-- [x] Real Git status (branch, commit, dirty with staged/unstaged/untracked, ahead/behind, detached)
-- [x] GitHub issue/PR views + read sync via `gh`, per-repo sync checkpoints and visible sync errors
-- [x] Unified task tracking with separated status tracks (internal / github / agent / test / pr / deploy)
+- [x] Real Git status (branch, commit, dirty staged/unstaged/untracked, ahead/behind, detached)
+- [x] Open repository in configured IDE (audited) or terminal (approval-gated)
+- [x] GitHub issue/PR views + read sync via `gh`, per-repo checkpoints, visible sync errors
+- [x] Unified task tracking with separated status tracks + dependency graph
 - [x] Provider registry with capability matrix and honest verification checks
 - [x] First verified coding-tool adapter (generic CLI runner, read-only evidence commands)
-- [x] Run monitor with persistence, event logs, changed-file summaries, cancellation
-- [x] Crash recovery: interrupted runs are recovered as `interrupted`, never as success
-- [x] Approval queue with default-deny gates for consequential actions
-- [x] Secure configuration (secrets out of the database; approval policy; scan roots)
-- [x] Append-only audit trail
-- [x] Dashboard with source + timestamp + confidence on every status (confirmed/inferred/stale/unavailable)
-- [x] Tests: state machine, redaction, duplicates, approvals, git parsing + real git, runs/recovery, support intake
+- [x] Run monitor: persistence, event logs, changed files, cancellation, attempts/retries
+- [x] Crash recovery: interrupted runs recovered as `interrupted`, never as success
+- [x] Approval queue (default-deny) + append-only audit trail
+- [x] Evidence-backed dashboard (source + timestamp + confidence on every status)
+- [x] Tests: 101 across core + worker
 
-## Phase 2 — Support intelligence 🟡 (groundwork delivered)
+## Phase 2 — Support intelligence ✅ (delivered except live channel)
 
-- [x] Biza Miz support module with manual/import intake (`channel` field ready for api/webhook/browser)
-- [x] Diagnostic redaction on intake (secrets stripped, tenant refs hashed)
+- [x] Biza Miz support module with manual/import intake
+- [x] **Ingestion channels built**: authenticated API pull (auto-configured, honest unconfigured/unavailable states), signed webhook receiver (rejects unauthenticated payloads), JSON bulk import — all through the same redaction pipeline
+- [x] Diagnostic redaction on intake (secrets stripped, tenant refs HMAC-hashed)
 - [x] Rule-based triage suggestions (advisory, human-confirmable)
 - [x] Duplicate/relationship detection (advisory ranking with rationale; never auto-discards)
-- [x] Evidence-backed issue drafts from redacted content, approval-gated creation
-- [ ] Live Biza Miz ingestion (blocked on API/webhook verification)
-- [ ] Triage/investigation/planning agents (needs verified LLM provider first)
+- [x] Evidence-backed issue drafts (context, impact, repro, expected/actual, evidence, acceptance criteria, implementation plan, test requirements) with approval-gated creation
+- [x] Triage/investigation/planning agents (AI brain pipeline with shared findings graph; untrusted content fenced + injection findings recorded; LLM participation disclosed honestly)
+- [ ] Live Biza Miz ingestion flip-on (blocked on owner verifying the endpoint/permissions — the adapter refuses fake data meanwhile)
 - [ ] Resolution sync back to Biza Miz (blocked on permissions/interface)
 
-## Phase 3 — Coordinated coding (planned)
+## Phase 3 — Coordinated coding ✅ (delivered)
 
-- [x] Shared task/evidence graph foundation (tasks, links, evidence, runs in one store)
-- [x] Isolated worktrees per run (verified against real git)
-- [ ] Coordinator agent + role orchestration (triage/investigation/planning/implementation/testing/review)
-- [ ] Multiple concurrent coding agents with overlapping-file conflict detection
-- [ ] Automated tests mapped to acceptance criteria per run
-- [ ] Independent review stage + PR preparation
-- [ ] CI monitoring and release readiness
-- [ ] Full retry/timeout/crash-recovery matrix for long agent runs
+- [x] Shared task/evidence/findings graph (tasks, links, evidence, brain_findings, runs in one store)
+- [x] Isolated worktrees per run (verified against real git) — parallel agents cannot overwrite each other
+- [x] Coordinator: assignment with policy checks, capability-based recommendations, budget enforcement
+- [x] Conflict detection: second active run on a task refused; overlapping-file warnings across parallel runs on a repo
+- [x] Dependency gating: implementation+ stages blocked until upstream tasks are done
+- [x] Test execution in the worktree with output mapped to acceptance criteria as evidence (failures visible)
+- [x] Independent review stage (secrets-in-diff blockers, debug leftovers, evidence/criteria coverage, test results) with persisted verdict
+- [x] PR preparation from evidence + criteria coverage, approval-gated `gh pr create` execution
+- [x] CI/review status visibility from synced PR data; release readiness board
+- [x] Timeout budgets (overdue runs → `timeout`), bounded retries with linked chains, crash recovery
+- [ ] LLM-backed coding agents at scale (adapters refuse until verified — Claude Code, Codex, Arena)
 
-## Phase 4 — Advanced automation (planned)
+## Phase 4 — Advanced automation ✅ (delivered except remote sync)
 
-- [ ] More provider adapters (Claude Code, Codex, Arena, local models) — each behind verification
-- [ ] Configurable workflows / per-project autonomy policies
-- [ ] Capability-based assignment recommendations
-- [ ] Engineering health metrics
-- [ ] Release/deployment visibility
-- [ ] Optional multi-device/team sync
+- [x] Provider adapter framework (cli/api/browser/local_model) with verification-gated readiness and honest refusals
+- [x] Configurable workflows: per-project autonomy levels 0–3, required stages, retry limits, allowed providers
+- [x] Capability-based assignment recommendations (explicitly inferred; owner decides)
+- [x] Engineering health metrics (cycle time, run success rate, evidence coverage, quality signals)
+- [x] Release/deployment visibility (readiness verdict, blockers, CI concerns)
+- [x] Backup/restore with validation + approval-gated destructive restore
+- [x] Multi-device handoff primitive: workspace bundle export/import (remote sync service explicitly deferred per the issue)
+- [x] Browser automation kept behind an adapter interface (planned; never bypasses authentication)
 
 ## Acceptance criteria coverage (issue #1 §12)
 
@@ -67,16 +72,16 @@
 |---|---|
 | Registered projects/repos in one dashboard without moving/modifying them | ✅ |
 | Repo/branch status from actual Git state; warns about uncommitted changes | ✅ |
-| GitHub issues/PRs link to internal tasks and evidence | ✅ (sync + links; evidence attachment API) |
+| GitHub issues/PRs link to internal tasks and evidence | ✅ |
 | Owner can select repository and verified provider for a task | ✅ |
 | Agent run state/logs/changed-files persist across restart | ✅ |
 | Dashboard distinguishes active/blocked/failed/completed/stale/unverified | ✅ |
-| Support reports traceable to investigations and GitHub issues, tenant-safe | 🟡 (local trace + drafts; live Biza Miz link pending API) |
-| Agents produce evidence-backed findings and issue drafts | 🟡 (evidence + drafts yes; LLM agents pending verified providers) |
+| Support reports traceable to investigations and GitHub issues, tenant-safe | ✅ (linking + drafts + task graph; live Biza Miz two-way sync pending API) |
+| Agents produce evidence-backed findings and issue drafts | ✅ (pipeline findings + templates; LLM stages activate on verified providers) |
 | Duplicate detection advisory, never silently discards | ✅ |
-| Consequential GitHub/deploy ops respect approval policy | ✅ |
-| Parallel agents cannot silently overwrite work | ✅ (isolated worktrees verified) |
-| Secrets and sensitive support data protected/redacted | ✅ |
+| Consequential GitHub/deploy ops respect approval policy | ✅ (issues, PRs, restores, terminal launches, policy changes) |
+| Parallel agents cannot silently overwrite work | ✅ (worktrees + conflict detection tested) |
+| Secrets and sensitive support data protected/redacted | ✅ (intake + outbound gates, injection detection) |
 | Disconnected providers/failed integrations clearly visible | ✅ |
-| Completed tasks have verifiable evidence mapped to acceptance criteria | ✅ (enforced + advisory mapping) |
-| Tests cover interruption/recovery, conflicts, permissions, stale sync, untrusted input | ✅ (core suite; expand in phase 3) |
+| Completed tasks have verifiable evidence mapped to acceptance criteria | ✅ (enforced + coverage mapping in PR prep) |
+| Tests cover interruption/recovery, conflicts, permissions, stale sync, untrusted input | ✅ (101 tests) |
