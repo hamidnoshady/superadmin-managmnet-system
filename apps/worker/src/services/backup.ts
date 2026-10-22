@@ -95,21 +95,29 @@ export class BackupService {
    */
   validate(file: string): { ok: boolean; counts?: Record<string, number>; error?: string } {
     const abs = path.resolve(file);
-    if (!abs.startsWith(this.backupDir)) {
+    if (!abs.startsWith(path.resolve(this.backupDir)) && !abs.startsWith(this.backupDir)) {
       return { ok: false, error: 'Backup file must live in the configured backup directory' };
     }
     if (!fs.existsSync(abs)) return { ok: false, error: 'Backup file not found' };
+    let snapshot: InstanceType<typeof DatabaseSync> | null = null;
     try {
-      const snapshot = new DatabaseSync(abs);
+      snapshot = new DatabaseSync(abs);
       const counts: Record<string, number> = {};
       for (const table of ['projects', 'tasks', 'runs', 'audit_log']) {
         const row = snapshot.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
         counts[table] = Number(row.n);
       }
-      snapshot.close();
       return { ok: true, counts };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      // ALWAYS release the handle — a leaked sqlite handle keeps the file
+      // locked on Windows and makes even best-effort cleanup fail (EBUSY).
+      try {
+        snapshot?.close();
+      } catch {
+        // already closed
+      }
     }
   }
 

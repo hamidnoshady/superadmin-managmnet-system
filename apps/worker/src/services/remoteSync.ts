@@ -82,13 +82,19 @@ export class RemoteSyncService {
         return { ok: false, note };
       }
       const buf = Buffer.from(await res.arrayBuffer());
-      const file = path.join(CONFIG.dataDir, 'backups', `remote-${Date.now()}.sqlite`);
+      const file = path.join(CONFIG.dataDir, 'backups', `remote-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sqlite`);
       fs.writeFileSync(file, buf);
       const validation = this.backup.validate(file);
       if (!validation.ok) {
-        // Never install a bundle that does not validate.
-        fs.rmSync(file, { force: true });
-        const note = `Pulled bundle failed validation (${validation.error ?? 'unknown'}) — it was discarded, not installed.`;
+        // Never install a bundle that does not validate. Best-effort cleanup;
+        // if the file cannot be removed, say so instead of pretending.
+        let discarded = true;
+        try {
+          fs.rmSync(file, { force: true, maxRetries: 5, retryDelay: 100 });
+        } catch {
+          discarded = false;
+        }
+        const note = `Pulled bundle failed validation (${validation.error ?? 'unknown'}) — it was not installed${discarded ? ' and was discarded' : '; cleanup failed, delete it manually from backups'}.`;
         this.audit.record({ actor, action: 'sync.pull', targetKind: 'system', outcome: 'error', detail: note });
         return { ok: false, note };
       }
