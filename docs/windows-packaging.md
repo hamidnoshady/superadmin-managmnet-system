@@ -53,6 +53,10 @@ a starting point, not a verified build.
    - interrupted runs recover
    - credentials never touch `.dcc/`
    - secret store round-trips through Credential Manager
+
+   CI (`.github/workflows/ci.yml`) runs the same suite on `windows-latest` as a
+   non-blocking experimental job on every PR — treat its result as early signal,
+   not as the verification itself.
 8. Decide minimum Windows versions/architectures (owner) and pin the WebView2
    runtime policy accordingly.
 

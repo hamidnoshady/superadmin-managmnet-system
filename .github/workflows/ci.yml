@@ -1,0 +1,94 @@
+# CI for the Development Command Center (issue #1).
+#
+# - test:   typecheck + the full test suites (core + worker, 115 tests) on Node 22.
+#           Required — this is the gate.
+# - build:  production builds of @dcc/core and @dcc/ui, UI bundle uploaded as an
+#           artifact. The worker is plain TypeScript run via `tsx`, so its
+#           "build" is the typecheck step in the test job — there is no bundle
+#           to produce for it.
+# - test-windows (experimental, non-blocking): the same suites on Windows.
+#           The product targets Windows and the packaging checklist wants the
+#           suite run there, but the Windows paths (e.g. the Credential Manager
+#           secret backend) stay marked unverified until smoke-tested on a real
+#           host — so this job reports signal without blocking merges.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Ubuntu, Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (also builds @dcc/core via prepare)
+        run: npm ci
+
+      - name: Typecheck (core build + worker + ui)
+        run: npm run typecheck
+
+      - name: Run test suites (core + worker)
+        run: npm test
+
+  build:
+    name: Build (core + UI)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build @dcc/core
+        run: npm run build:core
+
+      - name: Build @dcc/ui (typecheck + vite build)
+        run: npm run build -w @dcc/ui
+
+      - name: Upload UI bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: apps/ui/dist
+          retention-days: 14
+
+  test-windows:
+    name: Test (Windows, experimental)
+    runs-on: windows-latest
+    # Experimental: informative Windows signal, never a merge gate — the
+    # Windows integration surface is still explicitly unverified.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies (also builds @dcc/core via prepare)
+        run: npm ci
+
+      - name: Run test suites (core + worker)
+        run: npm test

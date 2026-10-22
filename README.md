@@ -1,12 +1,14 @@
 # Development Command Center
 
+[![CI](https://github.com/hamidnoshady/superadmin-managmnet-system/actions/workflows/ci.yml/badge.svg)](https://github.com/hamidnoshady/superadmin-managmnet-system/actions/workflows/ci.yml)
+
 One control center for all development projects, local repositories, GitHub issues and
 pull requests, coding LLMs/agents, and Biza Miz superadmin bug reports and support
 tickets — with evidence-backed status and human control over consequential changes.
 
 Built according to [issue #1](https://github.com/hamidnoshady/superadmin-managmnet-system/issues/1)
-(Windows-first, local-first plan). Current delivery: **Phase 1 complete, Phase 2
-groundwork in place** — see [docs/roadmap.md](docs/roadmap.md).
+(Windows-first, local-first plan). Current delivery: **Phases 0–5 delivered** (owner
+verification items remain) — see [docs/roadmap.md](docs/roadmap.md).
 
 ## Principles
 
