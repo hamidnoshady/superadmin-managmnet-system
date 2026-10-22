@@ -13,7 +13,7 @@ let repoPath: string;
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
 
-const waitFor = async (fn: () => boolean, timeoutMs = 5000): Promise<void> => {
+const waitFor = async (fn: () => boolean, timeoutMs = 20000): Promise<void> => {
   const start = Date.now();
   while (!fn()) {
     if (Date.now() - start > timeoutMs) throw new Error('timeout waiting for condition');

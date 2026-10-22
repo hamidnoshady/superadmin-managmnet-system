@@ -62,11 +62,26 @@ export class SecretStore {
         await this.winSet(name, value);
         return { ok: true, backend: 'windows_credential_manager' };
       } catch (err) {
-        return { ok: false, backend: 'windows_credential_manager', error: err instanceof Error ? err.message : String(err) };
+        // Honest fallback: if the Credential Manager path fails (it is still
+        // UNVERIFIED outside real Windows hosts), store in the env backend and
+        // say exactly that — never silently claim the OS keystore was used.
+        const cmError = err instanceof Error ? err.message : String(err);
+        const fallback = await this.setEnvBackend(name, value);
+        if (fallback.ok) {
+          return {
+            ok: true,
+            backend: 'env',
+            error: `Credential Manager failed (${cmError}) — stored in the env backend instead`,
+          };
+        }
+        return { ok: false, backend: 'windows_credential_manager', error: cmError };
       }
     }
-    // Env backend: export into this process and (optionally) the locked file
-    // so restarts can rehydrate — the file is 0600 and outside version control.
+    return this.setEnvBackend(name, value);
+  }
+
+  /** Session-env + 0600 locked-file backend (all OSes). */
+  private async setEnvBackend(name: string, value: string): Promise<{ ok: boolean; backend: SecretBackend; error?: string }> {
     process.env[name] = value;
     try {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true });

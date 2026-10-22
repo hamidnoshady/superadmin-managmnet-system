@@ -67,7 +67,7 @@ jobs:
         run: npm run build -w @dcc/ui
 
       - name: Upload UI bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ui-dist
           path: apps/ui/dist
@@ -91,4 +91,23 @@ jobs:
         run: npm ci
 
       - name: Run test suites (core + worker)
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee win-test-output.txt
+
+      # Failure details are published as error annotations + a step summary so
+      # they stay readable even when the run-log service is unreachable.
+      - name: Report failures
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### Windows test output (tail)"
+            echo '```'
+            tail -n 80 win-test-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -nE "AssertionError|Unhandled Errors|FAIL |Error: |× " win-test-output.txt | head -25 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
