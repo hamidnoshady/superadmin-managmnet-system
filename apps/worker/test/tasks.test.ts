@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createServices, type AppServices } from '../src/services/seed.js';
+import { removeTempDir } from './helpers.js';
 
 let tmp: string;
 let services: AppServices;
@@ -12,9 +13,9 @@ beforeEach(() => {
   services = createServices(path.join(tmp, 'test.sqlite'));
 });
 
-afterEach(() => {
+afterEach(async () => {
   services.db.close();
-  fs.rmSync(tmp, { recursive: true, force: true });
+  await removeTempDir(tmp);
 });
 
 describe('task lifecycle with evidence guard', () => {

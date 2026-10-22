@@ -20,6 +20,7 @@ import { SecretStore } from '../src/services/secrets.js';
 import { LlmClient } from '../src/services/llm.js';
 import { ClaudeCodeAdapter, CodexAdapter, HttpApiAdapter } from '../src/services/agentAdapters.js';
 import { RemoteSyncService } from '../src/services/remoteSync.js';
+import { removeTempDir } from './helpers.js';
 
 let tmp: string;
 let services: AppServices;
@@ -34,9 +35,9 @@ beforeEach(() => {
   services = createServices(path.join(tmp, 'test.sqlite'));
 });
 
-afterEach(() => {
+afterEach(async () => {
   services.db.close();
-  fs.rmSync(tmp, { recursive: true, force: true });
+  await removeTempDir(tmp);
   delete process.env.DCC_SYNC_ENDPOINT;
   delete process.env.DCC_FAKE_KEY;
 });

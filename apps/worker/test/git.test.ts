@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { GitService, parseStatusPorcelainV2, parseGithubRemote } from '../src/services/git.js';
+import { removeTempDir } from './helpers.js';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
@@ -71,8 +72,8 @@ describe('GitService against a real temporary repository', () => {
     git(dir, 'remote', 'add', 'origin', 'https://github.com/example/demo.git');
   });
 
-  afterAll(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+  afterAll(async () => {
+    await removeTempDir(dir);
   });
 
   it('captures real git state without modifying the repository', async () => {
