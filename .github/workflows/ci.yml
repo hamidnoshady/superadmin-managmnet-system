@@ -102,12 +102,13 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          sed 's/\x1b\[[0-9;]*m//g' win-test-output.txt > win-test-clean.txt
           {
             echo "### Windows test output (tail)"
             echo '```'
-            tail -n 80 win-test-output.txt
+            tail -n 80 win-test-clean.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          grep -nE "AssertionError|Unhandled Errors|FAIL |Error: |× " win-test-output.txt | head -25 | while IFS= read -r line; do
+          grep -nE "AssertionError|TypeError|Unhandled Errors|FAIL |Error:|timed out|expected " win-test-clean.txt | head -25 | while IFS= read -r line; do
             echo "::error::${line}"
           done

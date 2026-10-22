@@ -33,6 +33,8 @@ export interface SecretStatus {
  */
 export class SecretStore {
   private readonly filePath: string;
+  /** In-process cache: every OS-backend read (PowerShell on Windows) is slow. */
+  private readonly cache = new Map<string, string>();
 
   constructor(private readonly targetPrefix = 'dcc') {
     this.filePath = path.join(CONFIG.dataDir, 'secrets', 'secrets.json');
@@ -57,9 +59,11 @@ export class SecretStore {
   }
 
   async set(name: string, value: string): Promise<{ ok: boolean; backend: SecretBackend; error?: string }> {
+    this.cache.set(name, value);
     if (process.platform === 'win32') {
       try {
         await this.winSet(name, value);
+        process.env[name] = value; // session-env cache so reads never re-spawn PowerShell
         return { ok: true, backend: 'windows_credential_manager' };
       } catch (err) {
         // Honest fallback: if the Credential Manager path fails (it is still
@@ -97,9 +101,16 @@ export class SecretStore {
 
   async get(name: string): Promise<string | null> {
     if (process.env[name]) return process.env[name] ?? null;
+    const cached = this.cache.get(name);
+    if (cached) return cached;
     if (process.platform === 'win32') {
       try {
-        return await this.winGet(name);
+        const value = await this.winGet(name);
+        if (value) {
+          this.cache.set(name, value);
+          process.env[name] = value;
+        }
+        return value;
       } catch {
         return null;
       }
