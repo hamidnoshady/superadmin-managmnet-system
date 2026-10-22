@@ -3,7 +3,7 @@ import type { ApprovalKind, TaskStatus } from '@dcc/core';
 import type { AppServices } from '../services/seed.js';
 import { GithubService } from '../services/github.js';
 import { DashboardService } from '../services/dashboard.js';
-import { seed, isEmpty } from '../services/seed.js';
+import { seed, isEmpty, resolveLlmConfig } from '../services/seed.js';
 
 export function buildRoutes(services: AppServices): Router {
   const router = Router();
@@ -549,6 +549,132 @@ export function buildRoutes(services: AppServices): Router {
       outcome: result.ok ? 'ok' : 'error', detail: result.ok ? `opened via ${result.method}` : result.error ?? 'failed',
     });
     res.status(result.ok ? 200 : 400).json(result);
+  }));
+
+  // ---- Secrets & LLM configuration --------------------------------------------
+
+  router.get('/secrets/status', wrap((_req, res) => {
+    res.json(services.secrets.status());
+  }));
+
+  router.post('/secrets', wrap(async (req, res) => {
+    const result = await services.secrets.set(String(req.body?.name ?? ''), String(req.body?.value ?? ''));
+    services.audit.record({
+      actor: actorOf(req), action: 'secrets.set', targetKind: 'secret',
+      targetId: String(req.body?.name ?? ''), outcome: result.ok ? 'ok' : 'error',
+      detail: `Stored via ${result.backend} (value never logged)`,
+    });
+    res.status(result.ok ? 201 : 400).json(result);
+  }));
+
+  router.get('/llm-config', wrap((req, res) => {
+    res.json({
+      'http-api-model': resolveLlmConfig(services.db, 'http-api-model'),
+      'local-model': resolveLlmConfig(services.db, 'local-model'),
+    });
+  }));
+
+  router.put('/llm-config', wrap((req, res) => {
+    services.db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES ('llm_providers', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      JSON.stringify(req.body ?? {}), new Date().toISOString(),
+    );
+    services.audit.record({ actor: actorOf(req), action: 'settings.llm_config', targetKind: 'settings', targetId: 'llm_providers', outcome: 'ok', detail: 'LLM endpoint config saved (env var names only)' });
+    res.json({ ok: true });
+  }));
+
+  // ---- Optional remote sync (workspace bundles) --------------------------------
+
+  router.get('/sync/check', wrap(async (_req, res) => {
+    res.json(await services.remoteSync.checkConnection());
+  }));
+
+  router.post('/sync/push', wrap(async (req, res) => {
+    res.json(await services.remoteSync.push(actorOf(req)));
+  }));
+
+  router.post('/sync/pull', wrap(async (req, res) => {
+    res.json(await services.remoteSync.pull(actorOf(req)));
+  }));
+
+  // ---- GitHub: CI checks + resolution sync-back ---------------------------------
+
+  router.post('/github/sync-checks', wrap(async (req, res) => {
+    const results = await services.coordinator.syncAllChecks(
+      String(req.body?.repoId ?? ''),
+      { syncChecks: (repo: Parameters<typeof github.syncChecks>[0], n: number, sha: string) => github.syncChecks(repo, n, sha) },
+      actorOf(req),
+    );
+    res.json(results);
+  }));
+
+  router.post('/github/issues/:number/comment', wrap(async (req, res) => {
+    const actor = actorOf(req);
+    const gate = services.approvals.checkGate('issue_comment', req.body?.approvalId ?? null);
+    if (!gate.ok) {
+      services.audit.record({ actor, action: 'github.issue_comment', targetKind: 'api', outcome: 'denied', detail: gate.reason ?? null });
+      res.status(403).json({ error: gate.reason, requiresApproval: true });
+      return;
+    }
+    const repo = services.registry.getRepository(String(req.body?.repoId ?? ''));
+    if (!repo) { res.status(404).json({ error: 'Repository not found' }); return; }
+    res.json(await github.commentOnIssue(repo, Number(req.params.number), String(req.body?.body ?? ''), actor));
+  }));
+
+  router.post('/github/issues/:number/close', wrap(async (req, res) => {
+    const actor = actorOf(req);
+    const gate = services.approvals.checkGate('issue_close', req.body?.approvalId ?? null);
+    if (!gate.ok) {
+      services.audit.record({ actor, action: 'github.issue_close', targetKind: 'api', outcome: 'denied', detail: gate.reason ?? null });
+      res.status(403).json({ error: gate.reason, requiresApproval: true });
+      return;
+    }
+    const repo = services.registry.getRepository(String(req.body?.repoId ?? ''));
+    if (!repo) { res.status(404).json({ error: 'Repository not found' }); return; }
+    res.json(await github.closeIssue(repo, Number(req.params.number), String(req.body?.comment ?? 'Resolved.'), actor));
+  }));
+
+  // ---- Support resolution sync-back --------------------------------------------
+
+  router.post('/support/reports/:id/resolve', wrap(async (req, res) => {
+    const actor = actorOf(req);
+    const result = services.support.recordResolution(
+      req.params.id,
+      { status: req.body?.status === 'closed' ? 'closed' : 'resolved', note: String(req.body?.note ?? 'Resolved.') },
+      actor,
+    );
+    if (!result.ok) { res.status(404).json(result); return; }
+    const actions = [...result.actions];
+
+    // Sync back through supported interfaces where available/approved.
+    const report = result.report!;
+    if (report.externalRef) {
+      const sync = await services.ingest.postResolution(report.externalRef, { status: report.status, note: String(req.body?.note ?? '') }, actor);
+      actions.push(sync.note);
+    }
+    if (req.body?.githubRepoId && req.body?.githubIssueNumber) {
+      const approval = services.approvals.request({
+        kind: 'issue_comment',
+        title: `Sync resolution to GitHub issue #${req.body.githubIssueNumber} (${report.title.slice(0, 50)})`,
+        payload: { repoId: req.body.githubRepoId, issueNumber: req.body.githubIssueNumber, note: req.body?.note ?? 'Resolved.' },
+        requestedBy: actor,
+      });
+      actions.push(`GitHub sync awaits approval ${approval.id} (issue_comment gate)`);
+    }
+    res.json({ ...result, actions });
+  }));
+
+  // ---- Autonomous implementation (autonomy >= 2) --------------------------------
+
+  router.post('/coordinator/autonomous', wrap(async (req, res) => {
+    const result = await services.coordinator.runAutonomousImplementation(String(req.body?.taskId ?? ''), {
+      providerId: req.body?.providerId ?? null,
+      repoId: req.body?.repoId ?? null,
+      actor: actorOf(req),
+      budgetSeconds: req.body?.budgetSeconds,
+    });
+    res.status(result.ok ? 201 : 400).json(result);
   }));
 
   // ---- Seed (demo data) --------------------------------------------------------------------------

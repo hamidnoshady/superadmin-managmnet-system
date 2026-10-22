@@ -43,6 +43,9 @@ export class Database {
       this.addColumnsIfMissing('projects', [
         ['environment_refs', "TEXT NOT NULL DEFAULT '[]'"],
       ]);
+      this.addColumnsIfMissing('github_prs', [
+        ['head_sha', 'TEXT'],
+      ]);
       this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
   }

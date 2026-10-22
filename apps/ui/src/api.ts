@@ -131,7 +131,32 @@ export const api = {
 
   openRepository: (id: string, target: 'ide' | 'terminal', approvalId?: string) =>
     request<{ ok: boolean; method: string; error?: string; requiresApproval?: boolean }>(`/repositories/${id}/open`, { method: 'POST', body: JSON.stringify({ target, approvalId }) }),
+
+  // Remaining phases: secrets, LLM endpoints, remote sync, CI checks, resolution sync-back
+  secretsStatus: () => request<{ backend: string; available: boolean; notes: string; checkedAt: string }>('/secrets/status'),
+  setSecret: (name: string, value: string) => request<{ ok: boolean; backend: string; error?: string }>('/secrets', { method: 'POST', body: JSON.stringify({ name, value }) }),
+  llmConfig: () => request<Record<string, LlmEndpointConfig | null>>('/llm-config'),
+  saveLlmConfig: (body: unknown) => request<{ ok: boolean }>('/llm-config', { method: 'PUT', body: JSON.stringify(body) }),
+  syncCheck: () => request<{ status: string; notes: string }>('/sync/check'),
+  syncPush: () => request<{ ok: boolean; note: string; bytes?: number }>('/sync/push', { method: 'POST' }),
+  syncPull: () => request<{ ok: boolean; note: string; file?: string }>('/sync/pull', { method: 'POST' }),
+  githubSyncChecks: (repoId: string) => request<Array<{ pr: number; ok: boolean; ciStatus?: string; error?: string }>>('/github/sync-checks', { method: 'POST', body: JSON.stringify({ repoId }) }),
+  resolveReport: (id: string, body: unknown) =>
+    request<{ ok: boolean; actions: string[]; error?: string; requiresApproval?: boolean }>(`/support/reports/${id}/resolve`, { method: 'POST', body: JSON.stringify(body) }),
+  commentOnIssue: (repoId: string, number: number, body: string, approvalId?: string) =>
+    request<{ ok: boolean; error?: string; requiresApproval?: boolean }>(`/github/issues/${number}/comment`, { method: 'POST', body: JSON.stringify({ repoId, body, approvalId }) }),
+  closeIssue: (repoId: string, number: number, comment: string, approvalId?: string) =>
+    request<{ ok: boolean; error?: string; requiresApproval?: boolean }>(`/github/issues/${number}/close`, { method: 'POST', body: JSON.stringify({ repoId, comment, approvalId }) }),
+  autonomousRun: (body: unknown) =>
+    request<{ ok: boolean; stages: Array<{ stage: string; status: string; note: string }>; runId?: string; error?: string }>('/coordinator/autonomous', { method: 'POST', body: JSON.stringify(body) }),
 };
+
+export interface LlmEndpointConfig {
+  baseUrl: string;
+  model: string;
+  apiKeyEnv: string;
+  style?: 'openai' | 'ollama';
+}
 
 export interface IngestResult {
   channel: string;

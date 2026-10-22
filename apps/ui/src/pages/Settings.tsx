@@ -180,6 +180,8 @@ export default function Settings(): JSX.Element {
         </Card>
       </div>
 
+      <SecretsLlmSyncPanel onMessage={setMessage} />
+
       <SectionTitle title={`Approval queue (${pending.length} pending)`} hint="owner decides — external writes wait here" />
       <Card>
         {approvals.length === 0 ? (
@@ -236,5 +238,121 @@ export default function Settings(): JSX.Element {
         ))}
       </Card>
     </div>
+  );
+}
+
+/** Secrets (OS-protected), LLM endpoint config (env names only), optional remote sync. */
+function SecretsLlmSyncPanel({ onMessage }: { onMessage: (msg: string) => void }): JSX.Element {
+  const [secretStatus, setSecretStatus] = useState<{ backend: string; available: boolean; notes: string } | null>(null);
+  const [secretName, setSecretName] = useState('');
+  const [secretValue, setSecretValue] = useState('');
+  const [llm, setLlm] = useState<Record<string, { baseUrl: string; model: string; apiKeyEnv: string; style?: string }>>({});
+  const [sync, setSync] = useState<{ status: string; notes: string } | null>(null);
+
+  const load = () => {
+    api.secretsStatus().then(setSecretStatus).catch(() => setSecretStatus(null));
+    api.llmConfig().then((cfg) => {
+      const filled: Record<string, { baseUrl: string; model: string; apiKeyEnv: string; style?: string }> = {};
+      for (const key of ['http-api-model', 'local-model']) {
+        filled[key] = { baseUrl: '', model: '', apiKeyEnv: '', style: 'openai', ...(cfg[key] ?? {}) };
+      }
+      setLlm(filled);
+    }).catch(() => setLlm({}));
+    api.syncCheck().then(setSync).catch(() => setSync(null));
+  };
+  useEffect(load, []);
+
+  return (
+    <>
+      <SectionTitle title="Secrets, LLM endpoints & optional sync" hint="OS-protected secrets · env var names only · explicit push/pull" />
+      <div className="grid cols-2">
+        <Card title="Secret store" right={secretStatus ? <Badge color={secretStatus.available ? 'green' : 'amber'}>{secretStatus.backend}</Badge> : null}>
+          {secretStatus && <div className="faint" style={{ marginBottom: 8 }}>{secretStatus.notes}</div>}
+          <div className="form-row">
+            <div className="field">
+              <label>Secret name (e.g. GH_TOKEN, OPENAI_API_KEY)</label>
+              <input value={secretName} onChange={(e) => setSecretName(e.target.value)} placeholder="NAME_ONLY" />
+            </div>
+            <div className="field">
+              <label>Value (stored in OS-protected storage, never logged)</label>
+              <input type="password" value={secretValue} onChange={(e) => setSecretValue(e.target.value)} placeholder="••••••••" />
+            </div>
+          </div>
+          <button
+            className="btn small primary"
+            disabled={!secretName || !secretValue}
+            onClick={async () => {
+              const result = await api.setSecret(secretName, secretValue);
+              onMessage(result.ok ? `Secret "${secretName}" stored via ${result.backend} (value never logged).` : `Failed: ${result.error}`);
+              setSecretName('');
+              setSecretValue('');
+            }}
+          >
+            Store secret
+          </button>
+          <div className="faint" style={{ marginTop: 8 }}>
+            Secrets are addressed by NAME everywhere else (LLM config, GitHub, Biza Miz). Values never enter SQLite, prompts, issue bodies, logs, or bundles.
+          </div>
+        </Card>
+
+        <Card title="LLM endpoints (optional)" right={<button className="btn small" onClick={async () => { await api.saveLlmConfig(llm); onMessage('LLM endpoint config saved (env var names only).'); load(); }}>Save</button>}>
+          {Object.entries(llm).map(([key, cfg]) => (
+            <div key={key} style={{ marginBottom: 12 }}>
+              <div className="mono" style={{ marginBottom: 4 }}>{key}</div>
+              <div className="form-row">
+                <div className="field">
+                  <label>Base URL (empty = disabled)</label>
+                  <input value={cfg.baseUrl} onChange={(e) => setLlm({ ...llm, [key]: { ...cfg, baseUrl: e.target.value } })} placeholder="http://127.0.0.1:11434" />
+                </div>
+                <div className="field">
+                  <label>Model</label>
+                  <input value={cfg.model} onChange={(e) => setLlm({ ...llm, [key]: { ...cfg, model: e.target.value } })} />
+                </div>
+                <div className="field">
+                  <label>API key env var NAME</label>
+                  <input value={cfg.apiKeyEnv} onChange={(e) => setLlm({ ...llm, [key]: { ...cfg, apiKeyEnv: e.target.value } })} placeholder="OPENAI_API_KEY" />
+                </div>
+              </div>
+            </div>
+          ))}
+          <div className="faint">
+            LLM assist is optional: without a verified endpoint the pipeline runs deterministic-only and says so ("LLM not used"). Prompts are redacted before any outbound call.
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid cols-2" style={{ marginTop: 12 }}>
+        <Card
+          title="Optional remote sync (workspace bundles)"
+          right={sync ? <Badge color={sync.status === 'verified' ? 'green' : sync.status === 'disabled' ? 'gray' : 'amber'}>{sync.status}</Badge> : null}
+        >
+          {sync && <div className="faint" style={{ marginBottom: 8 }}>{sync.notes}</div>}
+          <div className="row">
+            <button className="btn small" onClick={async () => { setSync(await api.syncCheck()); }}>Check connection</button>
+            <button
+              className="btn small primary"
+              onClick={async () => {
+                const result = await api.syncPush();
+                onMessage(result.ok ? `Pushed ${Math.round((result.bytes ?? 0) / 1024)} KB. ${result.note}` : result.note);
+              }}
+            >
+              Push bundle
+            </button>
+            <button
+              className="btn small"
+              onClick={async () => {
+                const result = await api.syncPull();
+                onMessage(result.ok ? `Pulled: ${result.note}` : result.note);
+              }}
+            >
+              Pull bundle
+            </button>
+          </div>
+          <div className="faint" style={{ marginTop: 8 }}>
+            Explicit push/pull only — no background service, no implicit cloud. Pulled bundles are validated before anything is installed; database restore still requires the gated Restore action.
+          </div>
+        </Card>
+      </div>
+    </>
   );
 }

@@ -56,6 +56,15 @@ export default function Support(): JSX.Element {
     load();
   };
 
+  const resolve = async (id: string) => {
+    const note = window.prompt('Resolution note (recorded as evidence, redacted before any outbound sync):') ?? '';
+    if (!note.trim()) return;
+    const result = await api.resolveReport(id, { status: 'resolved', note });
+    const extras = result.actions?.length ? ` Sync: ${result.actions.join('; ')}` : '';
+    setMessage(result.ok ? `Report marked resolved locally.${extras}` : `Failed: ${result.error}`);
+    load();
+  };
+
   return (
     <div>
       <SectionTitle
@@ -224,6 +233,9 @@ export default function Support(): JSX.Element {
               <div className="row wrap" style={{ marginTop: 12 }}>
                 <button className="btn small" onClick={() => triage(selected.id)}>Run triage</button>
                 <button className="btn small primary" onClick={() => issueDraft(selected.id)}>Prepare issue draft (needs approval)</button>
+                {selected.status !== 'resolved' && selected.status !== 'closed' && (
+                  <button className="btn small success" onClick={() => resolve(selected.id)}>Mark resolved</button>
+                )}
                 <button className="btn small" onClick={() => setSelected(null)}>Close</button>
               </div>
             </>

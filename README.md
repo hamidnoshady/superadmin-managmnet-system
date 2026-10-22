@@ -24,7 +24,7 @@ groundwork in place** — see [docs/roadmap.md](docs/roadmap.md).
 
 ```bash
 npm install          # builds @dcc/core automatically
-npm test             # core + worker test suites (101 tests)
+npm test             # core + worker test suites (115 tests)
 npm run dev:worker   # API + persistence on :8787 (auto-seeds demo data on first run)
 npm run dev:ui       # UI on :5173 (proxies /api to the worker)
 ```
@@ -38,11 +38,11 @@ source and last-updated time.
 1. **Command Center** — what is being developed, what remains, what is blocked, what failed, what needs approval; engineering health, release readiness, and internal↔GitHub discrepancies.
 2. **Projects & Repositories** — manual registration + folder scan (read-only discovery), real Git state with uncommitted-change warnings, open-in-IDE/terminal.
 3. **GitHub Operations** — issue/PR sync via `gh`, task linking, evidence-backed issue drafts, PR preparations, discrepancy detection — all external writes approval-gated.
-4. **Biza Miz Support** — ingestion channels (signed webhook, authenticated API pull, JSON import, manual), redacted intake (tenant hashes, secret stripping), rule-based triage, advisory duplicate detection, issue drafts.
-5. **AI Brain & Agents** — pipeline (triage → investigation → plan → approval), shared findings graph with injection detection, coordinator with conflict/dependency guards, capability-based provider recommendations.
-6. **LLM / Provider Studio** — adapter registry (Claude Code, Codex, Arena, Freebuf-TBD, generic CLI, HTTP API, local models) with honest verification status.
+4. **Biza Miz Support** — ingestion channels (signed webhook, authenticated API pull, JSON import, manual), redacted intake (tenant hashes, secret stripping), rule-based triage, advisory duplicate detection, issue drafts, resolution sync-back (local + channel post + gated GitHub comment/close).
+5. **AI Brain & Agents** — pipeline (triage → investigation → plan → approval), shared findings graph with injection detection, coordinator with conflict/dependency guards, capability-based provider recommendations, LLM-assisted stages (honest `usedLlm`, deterministic fallback), autonomy ≥ 2 unattended implementation (PR creation still approval-gated).
+6. **LLM / Provider Studio** — real execution adapters (Claude Code CLI, Codex CLI — worktree-isolated; HTTP API / local model — text-only) plus generic CLI, with per-host probe-based verification status.
 7. **Runs, Logs & Evidence** — persisted run history with attempts/retries/timeouts, event logs, changed files, crash recovery, test execution → evidence, independent review verdicts, PR preparation.
-8. **Settings, Security & Integrations** — scan roots, approval gates (including restore), autonomy policy, Biza Miz ingestion config, backup/restore bundles, audit trail, open verification items.
+8. **Settings, Security & Integrations** — scan roots, approval gates (including restore), autonomy policy, Biza Miz ingestion config, OS-protected secret store, LLM endpoint config (env names only), optional remote bundle sync, backup/restore bundles, audit trail, open verification items.
 
 ## Architecture
 
@@ -72,5 +72,6 @@ docs/            # discovery, architecture, integration matrix, roadmap, packagi
 Items that cannot be verified from this environment stay explicitly marked: the existing
 `D:\Development` app (owner-run inspection), the identity of "Freebuf", the live Biza Miz
 authenticated support API (channels are built and refuse unverified input), and live
-Claude Code/Codex/Arena execution (the coordinator around them is implemented; their
-adapters refuse to claim readiness). See the integration matrix.
+Claude Code/Codex authenticated LLM quality (the adapters probe executability per host and
+record each run's real outcome — never a claimed success). The Tauri/Windows scaffold in
+`apps/ui/src-tauri` is uncompiled until it runs on a Windows host. See the integration matrix.

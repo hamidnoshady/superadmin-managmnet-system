@@ -218,6 +218,37 @@ export class SupportService {
       return { redacted, ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
+
+  /**
+   * Resolution sync-back (issue #1 §7 step 7): mark the report resolved and,
+   * "only through supported permissions and interfaces", synchronize progress:
+   *  - if the API channel is verified → post the resolution there
+   *  - if a linked GitHub issue exists → raise approval-gated comment/close
+   * Everything else stays local and explicit.
+   */
+  recordResolution(
+    id: string,
+    resolution: { status: 'resolved' | 'closed'; note: string },
+    actor: string,
+  ): { ok: boolean; report?: SupportReport; actions: string[]; error?: string } {
+    const report = this.get(id);
+    if (!report) return { ok: false, actions: [], error: 'Report not found' };
+    const actions: string[] = [];
+
+    this.db.run(
+      'UPDATE support_reports SET status = ?, triage_notes = ?, updated_at = ? WHERE id = ?',
+      resolution.status,
+      `${report.triageNotes ?? ''}\nResolution (${new Date().toISOString()}): ${redact(resolution.note).redacted}`.trim(),
+      nowIso(),
+      id,
+    );
+    actions.push(`local status → ${resolution.status}`);
+    this.audit.record({
+      actor, action: 'support.resolve', targetKind: 'support_report', targetId: id, outcome: 'ok',
+      detail: redact(resolution.note).redacted,
+    });
+    return { ok: true, report: this.get(id), actions };
+  }
 }
 
 function toSupportReport(row: Record<string, unknown>): SupportReport {

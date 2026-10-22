@@ -10,6 +10,7 @@ import type { AuditService } from './audit.js';
 import type { TaskService } from './tasks.js';
 import type { RunService } from './runs.js';
 import type { CoordinatorService } from './coordinator.js';
+import type { LlmClient } from './llm.js';
 
 const SYSTEM_POLICY = [
   'You are part of the Development Command Center agent pipeline.',
@@ -22,7 +23,7 @@ const SYSTEM_POLICY = [
 
 export interface PipelineResult {
   runId: string;
-  stages: Array<{ stage: string; status: 'done' | 'skipped' | 'stopped'; note: string }>;
+  stages: Array<{ stage: string; status: 'done' | 'skipped' | 'stopped' | 'failed'; note: string }>;
   findings: number;
   stoppedForApproval: boolean;
 }
@@ -42,6 +43,8 @@ export class BrainService {
     private readonly tasks: TaskService,
     private readonly runs: RunService,
     private readonly coordinator: CoordinatorService,
+    /** Optional LLM factory — when a verified API/local provider is configured, stages become LLM-backed. */
+    private readonly llmFactory: () => { client: LlmClient; label: string } | null = () => null,
   ) {}
 
   /**
@@ -82,17 +85,44 @@ export class BrainService {
         confidence: 'confirmed',
       });
     }
+
+    // LLM-backed triage when a verified provider exists; deterministic otherwise.
+    const llm = this.llmFactory();
+    let llmUsed = false;
+    if (llm) {
+      const result = await llm.client.completeJson<{ category?: string; severity?: string; summary?: string }>(
+        `${SYSTEM_POLICY}\nYou classify bug reports/tasks. Return JSON: {"category": string, "severity": "critical|high|medium|low", "summary": string}`,
+        promptTriage.prompt,
+      );
+      if (result.ok && 'parsed' in result && result.parsed) {
+        llmUsed = result.usedLlm;
+        this.coordinator.recordFinding({
+          taskId, runId, stage: 'triage', kind: 'classification',
+          summary: `LLM-backed classification via ${llm.label}: category=${result.parsed.category ?? '?'} severity=${result.parsed.severity ?? '?'} — ${result.parsed.summary ?? ''}`,
+          confidence: 'inferred',
+        });
+      } else {
+        this.coordinator.recordFinding({
+          taskId, runId, stage: 'triage', kind: 'limitation',
+          summary: `LLM assist via ${llm.label} failed (${('error' in result ? result.error : 'unknown')}) — falling back to deterministic triage. Failure recorded, not hidden.`,
+          confidence: 'confirmed',
+        });
+      }
+    }
+    if (!llmUsed) {
+      this.coordinator.recordFinding({
+        taskId, runId, stage: 'triage', kind: 'note',
+        summary: 'LLM not used: no verified LLM provider available. Deterministic triage only.',
+        confidence: 'confirmed',
+      });
+    }
+
     const facts = extractFacts(`${task.title} ${task.description}`);
     this.coordinator.recordFinding({
       taskId, runId, stage: 'triage', kind: 'classification',
       summary: `Classified as severity=${task.severity}, source=${task.source}. ${facts.length} fact-like observation(s) extracted.`,
       detail: facts.join('\n'),
       confidence: 'inferred',
-    });
-    this.coordinator.recordFinding({
-      taskId, runId, stage: 'triage', kind: 'note',
-      summary: 'LLM not used: no verified LLM provider available. Deterministic triage only.',
-      confidence: 'confirmed',
     });
     const dupes = this.similarTasks(task);
     if (dupes.length > 0) {
@@ -149,14 +179,21 @@ export class BrainService {
     });
     stages.push({ stage: 'planning', status: 'done', note: 'plan recorded as evidence' });
 
-    // ---- Stage 4: approval gate -------------------------------------------
+    // ---- Stage 4: approval gate / autonomous continuation -----------------
     const autonomy = opts.autonomyLevel ?? 0;
     if (autonomy < 2) {
       this.advanceTo(taskId, 'Waiting for Approval', opts.actor, 'pipeline reached approval gate');
       stoppedForApproval = true;
       stages.push({ stage: 'approval', status: 'stopped', note: 'waiting for owner approval before implementation (autonomy < 2)' });
     } else {
-      stages.push({ stage: 'approval', status: 'skipped', note: `autonomy level ${autonomy} allows unattended implementation in isolated worktrees` });
+      stages.push({ stage: 'approval', status: 'skipped', note: `autonomy level ${autonomy} allows unattended implementation in isolated worktrees (merge/release stay human-approved)` });
+      // Autonomy >= 2: drive implementation → tests → review → PR prep now.
+      const autonomous = await this.coordinator.runAutonomousImplementation(taskId, {
+        providerId: opts.providerId ?? null,
+        repoId: opts.repoId ?? task.repoId,
+        actor: opts.actor,
+      });
+      for (const s of autonomous.stages) stages.push(s);
     }
 
     // Stop the pipeline run successfully — implementation continues as its own runs.
@@ -174,41 +211,9 @@ export class BrainService {
     this.runs.addEvent(runId, 'status', `Pipeline run finished: ${status}`);
   }
 
-  /**
-   * Walk the task through intermediate lifecycle states (the state machine
-   * forbids skipping — e.g. Incoming cannot jump straight to Waiting for
-   * Approval). Each hop is audited; a refused hop is recorded, not hidden.
-   */
+  /** Delegate to the coordinator's shared task-state walker. */
   private advanceTo(taskId: string, target: Task['internalStatus'], actor: string, reason: string): boolean {
-    const order: Array<Task['internalStatus']> = [
-      'Incoming', 'Triage', 'Investigating', 'Planned',
-      'Waiting for Approval', 'Approved', 'In Development',
-      'Testing', 'Review', 'Ready for Merge',
-    ];
-    const current = this.tasks.get(taskId)?.internalStatus;
-    if (!current || current === target) return current === target;
-    const fromIdx = order.indexOf(current);
-    const toIdx = order.indexOf(target);
-    if (fromIdx < 0 || toIdx < 0 || toIdx < fromIdx) {
-      this.coordinator.recordFinding({
-        taskId, stage: 'approval', kind: 'limitation',
-        summary: `Cannot auto-advance task from ${current} to ${target} — needs human action`,
-        confidence: 'confirmed',
-      });
-      return false;
-    }
-    for (let i = fromIdx + 1; i <= toIdx; i += 1) {
-      const result = this.tasks.transition(taskId, order[i], actor, reason);
-      if (!result.ok) {
-        this.coordinator.recordFinding({
-          taskId, stage: 'approval', kind: 'limitation',
-          summary: `Auto-advance stopped at ${this.tasks.get(taskId)?.internalStatus}: ${result.error ?? 'transition refused'}`,
-          confidence: 'confirmed',
-        });
-        return false;
-      }
-    }
-    return true;
+    return this.coordinator.advanceTask(taskId, target, actor, reason);
   }
 
   private async investigate(targetDir: string, task: Task): Promise<Array<{ kind: string; summary: string; detail?: string | null; confidence: string }>> {

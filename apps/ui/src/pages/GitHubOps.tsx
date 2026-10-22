@@ -48,6 +48,22 @@ export default function GitHubOps(): JSX.Element {
     }
   };
 
+  const syncChecks = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const results = await api.githubSyncChecks(selected);
+      if (results.length === 0) {
+        setMessage('No open PRs with CI checks to sync for this repository.');
+      } else {
+        setMessage(results.map((r) => `PR #${r.pr}: ${r.ok ? `CI ${r.ciStatus}` : `failed — ${r.error}`}`).join(' · '));
+      }
+      setPulls(await api.githubPulls(selected));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createDraft = async () => {
     const result = await api.createIssueDraft({ title: draft.title, body: draft.body, repoId: selected, labels: ['draft'] });
     setMessage(`Draft saved. Creating the actual GitHub issue requires approval (request ${result.approval.id} is now pending).`);
@@ -65,6 +81,7 @@ export default function GitHubOps(): JSX.Element {
               {repos.map((r) => <option key={r.id} value={r.id}>{r.name}{r.githubOwner ? ` (${r.githubOwner}/${r.githubRepo})` : ''}</option>)}
             </select>
             <button className="btn primary small" onClick={sync} disabled={!selected || busy}>{busy ? 'Syncing…' : 'Sync from GitHub'}</button>
+            <button className="btn small" onClick={syncChecks} disabled={!selected || busy} title="Refresh CI check status for open PRs from the GitHub checks API">Sync CI checks</button>
           </div>
         }
       />

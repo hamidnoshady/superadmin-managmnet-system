@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import type { Provider, ProviderCapabilities, ProviderKind, ProviderStatus } from '@dcc/core';
 import { Database, newId, nowIso } from '../db/database.js';
 import type { AuditService } from './audit.js';
+import type { AgentAdapter } from './agentAdapters.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -146,6 +147,7 @@ export class ProviderService {
   constructor(
     private readonly db: Database,
     private readonly audit: AuditService,
+    private readonly adapters: Map<string, AgentAdapter> = new Map(),
   ) {}
 
   ensureSeeded(): void {
@@ -210,6 +212,24 @@ export class ProviderService {
     let status: ProviderStatus = 'unavailable';
     let notes = '';
 
+    // Prefer the real execution adapter's own check when one exists.
+    const adapter = this.adapters.get(provider.key);
+    if (adapter) {
+      const check = await adapter.check();
+      status = check.status;
+      notes = check.notes;
+      const checkedAtAdapter = nowIso();
+      this.db.run(
+        'UPDATE providers SET status = ?, last_checked_at = ?, check_notes = ? WHERE id = ?',
+        status, checkedAtAdapter, notes, id,
+      );
+      this.audit.record({
+        actor, action: 'provider.check', targetKind: 'provider', targetId: id,
+        outcome: status === 'verified' ? 'ok' : 'error', detail: notes, data: { status },
+      });
+      return this.get(id);
+    }
+
     try {
       switch (provider.key) {
         case 'generic-cli': {
@@ -226,39 +246,6 @@ export class ProviderService {
           } catch {
             status = 'unavailable';
             notes = 'gh CLI is not authenticated (or not installed). GitHub features will show as unavailable.';
-          }
-          break;
-        }
-        case 'local-model': {
-          try {
-            const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2_000) });
-            status = res.ok ? 'verified' : 'unavailable';
-            notes = res.ok ? 'Verified: local model server responded.' : `Local model server returned HTTP ${res.status}.`;
-          } catch {
-            status = 'unavailable';
-            notes = 'No local model server reachable on 127.0.0.1:11434.';
-          }
-          break;
-        }
-        case 'claude-code': {
-          try {
-            await execFileAsync(process.platform === 'win32' ? 'where' : 'which', ['claude'], { timeout: 5_000 });
-            status = 'unverified';
-            notes = 'Binary found on PATH, but login/execution interface is still unverified. Not marked ready.';
-          } catch {
-            status = 'unavailable';
-            notes = 'Claude Code binary not found on PATH in this environment.';
-          }
-          break;
-        }
-        case 'openai-codex': {
-          try {
-            await execFileAsync(process.platform === 'win32' ? 'where' : 'which', ['codex'], { timeout: 5_000 });
-            status = 'unverified';
-            notes = 'Binary found on PATH, but auth/execution interface is still unverified. Not marked ready.';
-          } catch {
-            status = 'unavailable';
-            notes = 'Codex CLI binary not found on PATH in this environment.';
           }
           break;
         }

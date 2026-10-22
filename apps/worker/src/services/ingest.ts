@@ -213,4 +213,43 @@ export class IngestService {
   listBatches(): Array<Record<string, unknown>> {
     return this.db.query('SELECT * FROM ingest_batches ORDER BY created_at DESC LIMIT 50');
   }
+
+  /**
+   * Resolution sync-back to Biza Miz over the supported API interface.
+   * If the channel is not verified, the sync is reported as unavailable and
+   * nothing is faked.
+   */
+  async postResolution(
+    externalRef: string,
+    resolution: { status: string; note: string },
+    actor: string,
+  ): Promise<{ ok: boolean; note: string }> {
+    const connection = await this.checkConnection();
+    if (connection.status !== 'verified') {
+      const note = `Resolution sync-back unavailable (${connection.status}) — resolution recorded locally only. ${connection.notes}`;
+      this.audit.record({ actor, action: 'ingest.resolve_sync', targetKind: 'support', outcome: 'error', detail: note });
+      return { ok: false, note };
+    }
+    const config = this.getConfig();
+    const token = process.env[config.authEnv]!;
+    try {
+      const res = await fetch(`${config.apiUrl.replace(/\/$/, '')}/bug-reports/${encodeURIComponent(externalRef)}/resolution`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: resolution.status, note: resolution.note }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        const note = `Resolution sync-back failed: HTTP ${res.status}`;
+        this.audit.record({ actor, action: 'ingest.resolve_sync', targetKind: 'support', outcome: 'error', detail: note });
+        return { ok: false, note };
+      }
+      this.audit.record({ actor, action: 'ingest.resolve_sync', targetKind: 'support', outcome: 'ok', detail: `Synced resolution for ${externalRef}` });
+      return { ok: true, note: 'Resolution synchronized to Biza Miz.' };
+    } catch (err) {
+      const note = `Resolution sync-back failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.audit.record({ actor, action: 'ingest.resolve_sync', targetKind: 'support', outcome: 'error', detail: note });
+      return { ok: false, note };
+    }
+  }
 }

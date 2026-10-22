@@ -94,8 +94,9 @@ Packages:
   are implemented and tested.
 - Live Biza Miz ingestion flip-on (channels implemented: signed webhook receiver,
   authenticated API pull, JSON import; they refuse unverified/unconfigured input).
-- Remote multi-device sync service (explicitly deferred by the issue); the workspace
-  bundle export/import is the local-first handoff primitive.
+- Remote multi-device sync service — now implemented as **explicit, owner-triggered
+  bundle push/pull** (`services/remoteSync.ts`) against a configured endpoint; no
+  background service, and pulled bundles are validated before any install.
 
 ## Phase 2–4 components (delivered)
 
@@ -115,3 +116,33 @@ Packages:
   discrepancy detection (`core/discrepancy.ts`), release readiness verdict.
 - **Backup (`services/backup.ts`)** — SQLite online-backup bundles + manifests,
   validation before restore, approval-gated destructive restore.
+
+## Remaining-phase components (delivered)
+
+- **Secrets (`services/secrets.ts`)** — OS-protected secret store: Windows
+  Credential Manager (CredWrite/CredRead via PowerShell P/Invoke) on Windows,
+  session-env + 0600 file fallback elsewhere. Secrets are addressed by NAME;
+  values never enter SQLite, prompts, logs, or bundles.
+- **LLM client (`services/llm.ts`)** — OpenAI-compatible + Ollama-style HTTP
+  clients behind one interface. Every outbound prompt is redacted
+  (`core/redaction.ts`) and gated (`assertSafeForOutbound`) before send;
+  `usedLlm` reports truthfully per call.
+- **Agent adapters (`services/agentAdapters.ts`)** — real execution adapters:
+  Claude Code CLI and OpenAI Codex CLI (file-editing; **refuse to run without an
+  isolated worktree**), HTTP-API model and local model (text-only stages).
+  Readiness is probed per host (`--version` / endpoint reachability) and each
+  run's real outcome becomes evidence (success only on exit 0).
+- **Remote sync (`services/remoteSync.ts`)** — optional workspace-bundle
+  push/pull (see above).
+- **Autonomy ≥ 2 flow (`services/coordinator.ts`)** — `runAutonomousImplementation`:
+  implementation → tests → independent review → PR preparation in one guarded
+  run; PR creation, merges, releases, deploys stay behind approval gates.
+- **CI checks sync (`services/github.ts`)** — `mapCheckRuns` + PR head-SHA
+  tracking + `syncChecks` (read-only `gh api`), with missing CI shown as
+  `no_checks`/`unknown`, never as passing.
+- **Resolution sync-back (`services/support.ts`, `services/ingest.ts`)** —
+  support resolutions recorded with evidence; channel sync-back is honest about
+  unavailable interfaces; GitHub issue comment/close run only after the
+  matching approval gate.
+- **Desktop scaffold (`apps/ui/src-tauri`)** — Tauri 2 shell + Windows
+  Credential Manager binding. Scaffold only: not compiled in the sandbox.

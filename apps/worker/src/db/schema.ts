@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Full schema for fresh databases (v2). Additive migrations for older files
@@ -219,6 +219,7 @@ CREATE TABLE IF NOT EXISTS github_prs (
   review_decision TEXT,
   mergeable      TEXT,
   ci_status      TEXT,
+  head_sha       TEXT,
   url            TEXT NOT NULL,
   updated_at     TEXT NOT NULL,
   synced_at      TEXT NOT NULL,

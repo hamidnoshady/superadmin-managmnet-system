@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { Database, nowIso } from '../db/database.js';
+import { SCHEMA_VERSION } from '../db/schema.js';
 import { CONFIG } from '../config.js';
 import type { AuditService } from './audit.js';
 
@@ -56,7 +57,7 @@ export class BackupService {
     };
     const manifest = {
       createdAt: nowIso(),
-      schemaVersion: 2,
+      schemaVersion: SCHEMA_VERSION,
       counts,
       note: 'Development Command Center local-state bundle. Secrets are never stored in this database.',
     };

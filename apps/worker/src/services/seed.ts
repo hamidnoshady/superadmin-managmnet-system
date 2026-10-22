@@ -21,6 +21,10 @@ import { BrainService } from './brain.js';
 import { IngestService } from './ingest.js';
 import { HealthService } from './health.js';
 import { BackupService } from './backup.js';
+import { SecretStore } from './secrets.js';
+import { LlmClient, styleFor, type LlmProviderConfig } from './llm.js';
+import { buildAdapters } from './agentAdapters.js';
+import { RemoteSyncService } from './remoteSync.js';
 
 export interface AppServices {
   db: Database;
@@ -37,6 +41,27 @@ export interface AppServices {
   ingest: IngestService;
   health: HealthService;
   backup: BackupService;
+  secrets: SecretStore;
+  remoteSync: RemoteSyncService;
+}
+
+/** LLM provider config lives in settings as env-var NAMES only (never secrets). */
+export function resolveLlmConfig(db: Database, key: string): LlmProviderConfig | null {
+  const row = db.queryOne<{ value: string }>('SELECT value FROM settings WHERE key = ?', 'llm_providers');
+  if (!row) return null;
+  try {
+    const map = JSON.parse(row.value) as Record<string, Partial<LlmProviderConfig>>;
+    const cfg = map[key];
+    if (!cfg?.baseUrl || !cfg.model) return null;
+    return {
+      baseUrl: cfg.baseUrl,
+      model: cfg.model,
+      apiKeyEnv: cfg.apiKeyEnv ?? '',
+      style: cfg.style ?? styleFor(cfg.baseUrl),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function createServices(dbPath = CONFIG.dbPath): AppServices {
@@ -46,17 +71,30 @@ export function createServices(dbPath = CONFIG.dbPath): AppServices {
   const settings = new SettingsService(db, audit);
   const registry = new RegistryService(db, audit);
   const tasks = new TaskService(db, audit);
-  const providers = new ProviderService(db, audit);
-  const runs = new RunService(db, audit, providers, tasks);
+  const secrets = new SecretStore();
+  const adapters = buildAdapters(secrets, (key) => resolveLlmConfig(db, key));
+  const providers = new ProviderService(db, audit, adapters);
+  const runs = new RunService(db, audit, providers, tasks, adapters);
   const support = new SupportService(db, audit, process.env.DCC_TENANT_SALT ?? 'dcc-local-tenant-salt');
   const approvals = new ApprovalService(db, audit, settings.get().approvalPolicy);
   const coordinator = new CoordinatorService(db, audit, tasks, runs, providers, registry);
-  const brain = new BrainService(db, audit, tasks, runs, coordinator);
+  const llmFactory = () => {
+    for (const key of ['http-api-model', 'local-model']) {
+      const provider = providers.getByKey(key);
+      const config = resolveLlmConfig(db, key);
+      if (provider?.enabled && provider.status === 'verified' && config) {
+        return { client: new LlmClient(config, secrets, key), label: `${provider.name} (${config.model})` };
+      }
+    }
+    return null;
+  };
+  const brain = new BrainService(db, audit, tasks, runs, coordinator, llmFactory);
   const ingest = new IngestService(db, audit, support);
   const health = new HealthService(db, settings);
   const backup = new BackupService(db, audit);
+  const remoteSync = new RemoteSyncService(secrets, audit, backup);
   providers.ensureSeeded();
-  return { db, audit, settings, registry, tasks, providers, runs, support, approvals, coordinator, brain, ingest, health, backup };
+  return { db, audit, settings, registry, tasks, providers, runs, support, approvals, coordinator, brain, ingest, health, backup, secrets, remoteSync };
 }
 
 export function isEmpty(db: Database): boolean {

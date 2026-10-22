@@ -357,6 +357,153 @@ export class CoordinatorService {
     return { timedOut };
   }
 
+  /**
+   * Walk the task through intermediate lifecycle states (the state machine
+   * forbids skipping). Shared by the brain pipeline and autonomous runs.
+   */
+  advanceTask(taskId: string, target: Task['internalStatus'], actor: string, reason: string): boolean {
+    const order: Array<Task['internalStatus']> = [
+      'Incoming', 'Triage', 'Investigating', 'Planned',
+      'Waiting for Approval', 'Approved', 'In Development',
+      'Testing', 'Review', 'Ready for Merge',
+    ];
+    const current = this.tasks.get(taskId)?.internalStatus;
+    if (!current || current === target) return current === target;
+    const fromIdx = order.indexOf(current);
+    const toIdx = order.indexOf(target);
+    if (fromIdx < 0 || toIdx < 0 || toIdx < fromIdx) {
+      this.recordFinding({
+        taskId, stage: 'coordinator', kind: 'limitation',
+        summary: `Cannot auto-advance task from ${current} to ${target} — needs human action`,
+        confidence: 'confirmed',
+      });
+      return false;
+    }
+    for (let i = fromIdx + 1; i <= toIdx; i += 1) {
+      const result = this.tasks.transition(taskId, order[i], actor, reason);
+      if (!result.ok) {
+        this.recordFinding({
+          taskId, stage: 'coordinator', kind: 'limitation',
+          summary: `Auto-advance stopped at ${this.tasks.get(taskId)?.internalStatus}: ${result.error ?? 'transition refused'}`,
+          confidence: 'confirmed',
+        });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Autonomous implementation (autonomy >= 2): implementation → tests →
+   * independent review → PR preparation in one guarded flow. The real PR is
+   * still approval-gated — the pipeline never merges or releases on its own.
+   */
+  async runAutonomousImplementation(
+    taskId: string,
+    opts: { providerId?: string | null; repoId?: string | null; actor: string; budgetSeconds?: number },
+  ): Promise<{ ok: boolean; stages: Array<{ stage: string; status: 'done' | 'skipped' | 'failed'; note: string }>; runId?: string }> {
+    const stages: Array<{ stage: string; status: 'done' | 'skipped' | 'failed'; note: string }> = [];
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, stages: [{ stage: 'implementation', status: 'failed', note: 'task not found' }] };
+
+    // Provider selection: a verified coding adapter first, else honest fallback.
+    const CODING_KEYS = new Set(['claude-code', 'openai-codex']);
+    let provider = opts.providerId ? this.providers.get(opts.providerId) : undefined;
+    if (!provider || !CODING_KEYS.has(provider.key)) {
+      provider = this.providers.list().find((p) => CODING_KEYS.has(p.key) && p.status === 'verified' && p.enabled);
+    }
+    const useCodingAgent = provider && CODING_KEYS.has(provider.key) && provider.status === 'verified';
+    const chosen = useCodingAgent
+      ? provider!
+      : this.providers.getByKey('generic-cli')!;
+
+    if (!useCodingAgent) {
+      stages.push({
+        stage: 'implementation',
+        status: 'skipped',
+        note: 'No verified coding agent available — implementation skipped (recorded as limitation, never as success). Evidence-only run will inspect the worktree.',
+      });
+    }
+
+    this.advanceTask(taskId, 'In Development', opts.actor, 'autonomous pipeline (autonomy >= 2)');
+    const started = await this.startGuardedRun({
+      taskId,
+      providerId: chosen.id,
+      repoId: opts.repoId ?? task.repoId,
+      stage: 'implementation',
+      budgetSeconds: opts.budgetSeconds ?? 600,
+      maxAttempts: 1,
+    }, opts.actor);
+    if (!started.ok || !started.run) {
+      return { ok: false, stages: [...stages, { stage: useCodingAgent ? 'implementation' : 'evidence_run', status: 'failed', note: started.error ?? 'run refused' }] };
+    }
+
+    const finished = await this.runs.waitUntilFinished(started.run.id, (opts.budgetSeconds ?? 600) * 1000 + 10_000);
+    const implOk = finished?.status === 'succeeded';
+    stages.push({
+      stage: useCodingAgent ? 'implementation' : 'evidence_run',
+      status: implOk ? 'done' : 'failed',
+      note: `run ${started.run.id} → ${finished?.status ?? 'unknown'}${finished?.error ? ` (${finished.error})` : ''}`,
+    });
+    if (!implOk) {
+      if (useCodingAgent) {
+        this.advanceTask(taskId, 'Failed', opts.actor, `implementation run ${finished?.status ?? 'failed'}`);
+      }
+      return { ok: false, stages, runId: started.run.id };
+    }
+
+    // Tests → evidence.
+    this.advanceTask(taskId, 'Testing', opts.actor, 'autonomous pipeline');
+    const tests = await this.runTests(started.run.id);
+    stages.push({ stage: 'testing', status: tests.ok ? 'done' : 'failed', note: tests.summary });
+
+    // Independent review.
+    this.advanceTask(taskId, 'Review', opts.actor, 'autonomous pipeline');
+    const review = await this.review(started.run.id);
+    stages.push({
+      stage: 'review',
+      status: review.ok ? 'done' : 'failed',
+      note: review.report ? `${review.report.verdict} — ${review.report.summary}` : (review.error ?? 'review failed'),
+    });
+
+    // PR preparation (creation remains approval-gated).
+    const pr = this.preparePr(started.run.id);
+    stages.push({
+      stage: 'pr_preparation',
+      status: pr.ok ? 'done' : 'failed',
+      note: pr.ok ? `PR "${pr.title}" prepared; creation waits for approval (${pr.approvalId})` : (pr.error ?? 'failed'),
+    });
+
+    if (review.verdict === 'request_changes') {
+      stages.push({ stage: 'review', status: 'failed', note: 'Task left in Review: independent review requested changes — human decides next steps.' });
+    } else {
+      this.advanceTask(taskId, 'Ready for Merge', opts.actor, 'autonomous pipeline completed with evidence');
+    }
+
+    this.audit.record({
+      actor: opts.actor, action: 'coordinator.autonomous_run', targetKind: 'task', targetId: taskId,
+      outcome: implOk ? 'ok' : 'error', detail: stages.map((s) => `${s.stage}:${s.status}`).join(', '),
+    });
+    return { ok: implOk && pr.ok, stages, runId: started.run.id };
+  }
+
+  /** Sync CI check status for all open PRs of a repository (read-only). */
+  async syncAllChecks(repoId: string, github: { syncChecks: (repo: never, n: number, sha: string) => Promise<{ ok: boolean; ciStatus?: string; error?: string }> }, actor: string): Promise<Array<{ pr: number; ok: boolean; ciStatus?: string; error?: string }>> {
+    const repo = this.db.queryOne<Record<string, unknown>>('SELECT * FROM repositories WHERE id = ?', repoId);
+    if (!repo) return [];
+    const prs = this.db.query<{ number: number; head_sha: string | null }>(
+      `SELECT number, head_sha FROM github_prs WHERE repo_id = ? AND state = 'open'`,
+      repoId,
+    );
+    const results: Array<{ pr: number; ok: boolean; ciStatus?: string; error?: string }> = [];
+    for (const pr of prs) {
+      const result = await github.syncChecks(repo as never, pr.number, pr.head_sha ?? '');
+      results.push({ pr: pr.number, ...result });
+    }
+    void actor;
+    return results;
+  }
+
   listPreparations(): Array<Record<string, unknown>> {
     return this.db.query('SELECT * FROM pr_preparations ORDER BY created_at DESC');
   }

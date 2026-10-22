@@ -116,6 +116,16 @@ export class GithubService {
     };
   }
 
+  /** Pure mapping from check-runs API JSON → aggregate CI status. */
+  static mapCheckRuns(payload: { check_runs?: Array<{ status?: string; conclusion?: string | null }> }): string {
+    const runs = payload.check_runs ?? [];
+    if (runs.length === 0) return 'no_checks';
+    const conclusions = runs.map((r) => r.conclusion ?? (r.status === 'completed' ? 'neutral' : 'pending'));
+    if (conclusions.some((c) => ['failure', 'timed_out', 'action_required', 'cancelled'].includes(c))) return 'failing';
+    if (conclusions.some((c) => c === 'pending' || c === null)) return 'pending';
+    return 'passing';
+  }
+
   /**
    * Sync issues + PRs for a registered repository. Read-only. Failures are
    * recorded per-repo so the dashboard can show the integration as unavailable.
@@ -155,15 +165,17 @@ export class GithubService {
           );
         }
         for (const pr of prs) {
+          const headSha = (prsRaw.find((r) => Number(r.number) === pr.number)?.head as { sha?: string } | undefined)?.sha ?? null;
           this.db.run(
-            `INSERT INTO github_prs (id, repo_id, number, title, state, draft, review_decision, mergeable, ci_status, url, updated_at, synced_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO github_prs (id, repo_id, number, title, state, draft, review_decision, mergeable, ci_status, head_sha, url, updated_at, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(repo_id, number) DO UPDATE SET
                title = excluded.title, state = excluded.state, draft = excluded.draft,
                review_decision = excluded.review_decision, mergeable = excluded.mergeable,
-               ci_status = excluded.ci_status, updated_at = excluded.updated_at, synced_at = excluded.synced_at`,
+               ci_status = excluded.ci_status, head_sha = excluded.head_sha,
+               updated_at = excluded.updated_at, synced_at = excluded.synced_at`,
             pr.id, repo.id, pr.number, pr.title, pr.state, pr.draft ? 1 : 0,
-            pr.reviewDecision, pr.mergeable, pr.ciStatus, pr.url, pr.updatedAt, pr.syncedAt,
+            pr.reviewDecision, pr.mergeable, pr.ciStatus, headSha, pr.url, pr.updatedAt, pr.syncedAt,
           );
         }
         this.db.run(
@@ -293,6 +305,81 @@ export class GithubService {
     } catch (err) {
       const error = redact(err instanceof Error ? err.message : String(err)).redacted;
       this.audit.record({ actor, action: 'github.pr_create', targetKind: 'repository', targetId: repo.id, outcome: 'error', detail: error });
+      return { ok: false, error };
+    }
+  }
+
+  /**
+   * Sync CI check results for a PR's head commit and update its ci_status.
+   * Read-only. Failures are recorded — a missing CI signal is 'unknown', not
+   * 'passing'.
+   */
+  async syncChecks(
+    repo: { id: string; githubOwner: string | null; githubRepo: string | null; remoteUrl: string | null },
+    prNumber: number,
+    headSha: string,
+  ): Promise<{ ok: boolean; ciStatus?: string; error?: string }> {
+    const gh = repo.githubOwner && repo.githubRepo ? { owner: repo.githubOwner, repo: repo.githubRepo } : parseGithubRemote(repo.remoteUrl);
+    if (!gh) return { ok: false, error: 'No GitHub remote' };
+    if (!headSha) return { ok: false, error: 'PR head SHA unknown — sync PRs first' };
+    try {
+      const payload = (await this.ghApi(`repos/${gh.owner}/${gh.repo}/commits/${headSha}/check-runs`)) as { check_runs?: Array<{ status?: string; conclusion?: string | null }> };
+      const ciStatus = GithubService.mapCheckRuns(payload);
+      this.db.run('UPDATE github_prs SET ci_status = ?, synced_at = ? WHERE repo_id = ? AND number = ?', ciStatus, nowIso(), repo.id, prNumber);
+      this.audit.record({
+        actor: 'user:sync', action: 'github.checks_sync', targetKind: 'pull_request',
+        targetId: `${repo.id}#${prNumber}`, outcome: 'ok', detail: `CI status: ${ciStatus} (${payload.check_runs?.length ?? 0} checks)`,
+      });
+      return { ok: true, ciStatus };
+    } catch (err) {
+      const error = redact(err instanceof Error ? err.message : String(err)).redacted;
+      this.audit.record({ actor: 'user:sync', action: 'github.checks_sync', targetKind: 'pull_request', targetId: `${repo.id}#${prNumber}`, outcome: 'error', detail: error });
+      return { ok: false, error };
+    }
+  }
+
+  /**
+   * Comment on / close a GitHub issue (used for support resolution sync-back).
+   * ONLY called after the matching approval gate has passed.
+   */
+  async commentOnIssue(
+    repo: { id: string; githubOwner: string | null; githubRepo: string | null; remoteUrl: string | null },
+    issueNumber: number,
+    body: string,
+    actor: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const gh = repo.githubOwner && repo.githubRepo ? { owner: repo.githubOwner, repo: repo.githubRepo } : parseGithubRemote(repo.remoteUrl);
+    if (!gh) return { ok: false, error: 'No GitHub remote' };
+    const safeBody = redact(body).redacted;
+    try {
+      assertSafeForOutbound(safeBody);
+      await execFileAsync('gh', ['issue', 'comment', String(issueNumber), '--repo', `${gh.owner}/${gh.repo}`, '--body', safeBody], { timeout: 30_000 });
+      this.audit.record({ actor, action: 'github.issue_comment', targetKind: 'repository', targetId: repo.id, outcome: 'ok', detail: `Commented on #${issueNumber}` });
+      return { ok: true };
+    } catch (err) {
+      const error = redact(err instanceof Error ? err.message : String(err)).redacted;
+      this.audit.record({ actor, action: 'github.issue_comment', targetKind: 'repository', targetId: repo.id, outcome: 'error', detail: error });
+      return { ok: false, error };
+    }
+  }
+
+  async closeIssue(
+    repo: { id: string; githubOwner: string | null; githubRepo: string | null; remoteUrl: string | null },
+    issueNumber: number,
+    comment: string,
+    actor: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const gh = repo.githubOwner && repo.githubRepo ? { owner: repo.githubOwner, repo: repo.githubRepo } : parseGithubRemote(repo.remoteUrl);
+    if (!gh) return { ok: false, error: 'No GitHub remote' };
+    const safeComment = redact(comment).redacted;
+    try {
+      assertSafeForOutbound(safeComment);
+      await execFileAsync('gh', ['issue', 'close', String(issueNumber), '--repo', `${gh.owner}/${gh.repo}`, '--comment', safeComment], { timeout: 30_000 });
+      this.audit.record({ actor, action: 'github.issue_close', targetKind: 'repository', targetId: repo.id, outcome: 'ok', detail: `Closed #${issueNumber}` });
+      return { ok: true };
+    } catch (err) {
+      const error = redact(err instanceof Error ? err.message : String(err)).redacted;
+      this.audit.record({ actor, action: 'github.issue_close', targetKind: 'repository', targetId: repo.id, outcome: 'error', detail: error });
       return { ok: false, error };
     }
   }

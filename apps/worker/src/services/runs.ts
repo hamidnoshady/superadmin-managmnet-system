@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import type { Provider, Run, RunEvent, RunStage, RunStatus } from '@dcc/core';
+import type { Provider, Run, RunEvent, RunStage, RunStatus, Task } from '@dcc/core';
 import { redact } from '@dcc/core';
 import { Database, newId, nowIso } from '../db/database.js';
 import { CONFIG } from '../config.js';
@@ -8,6 +8,7 @@ import { GitService } from './git.js';
 import type { AuditService } from './audit.js';
 import type { ProviderService } from './providers.js';
 import type { TaskService } from './tasks.js';
+import type { AgentAdapter } from './agentAdapters.js';
 
 export interface StartRunInput {
   taskId?: string | null;
@@ -42,6 +43,7 @@ export class RunService {
     private readonly audit: AuditService,
     private readonly providers: ProviderService,
     private readonly tasks: TaskService,
+    private readonly adapters: Map<string, AgentAdapter> = new Map(),
   ) {}
 
   /** Crash recovery: anything still "running" after a restart is interrupted. */
@@ -115,6 +117,17 @@ export class RunService {
   setReviewVerdict(runId: string, verdict: 'approve' | 'request_changes' | 'needs_human', summary: string): void {
     this.db.run('UPDATE runs SET review_verdict = ? WHERE id = ?', verdict, runId);
     this.addEvent(runId, 'evidence', `Independent review verdict: ${verdict} — ${summary}`);
+  }
+
+  /** Poll until the run reaches a terminal state (used by the autonomous pipeline). */
+  async waitUntilFinished(runId: string, timeoutMs: number): Promise<Run | undefined> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = this.get(runId);
+      if (run && ['succeeded', 'failed', 'cancelled', 'timeout', 'interrupted'].includes(run.status)) return run;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return this.get(runId);
   }
 
   list(limit = 100): Run[] {
@@ -220,15 +233,20 @@ export class RunService {
 
       if (provider.key === 'generic-cli') {
         await this.executeGenericCli(run, provider, command);
-      } else if (provider.status !== 'verified') {
-        // Honest failure: never pretend an unverified provider did work.
-        const error = `Provider "${provider.name}" has status "${provider.status}" — execution path not verified. Run recorded as failed (no silent success).`;
-        this.finish(run.id, 'failed', { error, exitCode: null });
-        this.addEvent(run.id, 'error', error);
       } else {
-        const error = `No execution adapter wired for provider "${provider.name}" yet (planned phase 3).`;
-        this.finish(run.id, 'failed', { error });
-        this.addEvent(run.id, 'error', error);
+        const adapter = this.adapters.get(provider.key);
+        if (adapter) {
+          await this.executeAdapter(run, provider, adapter);
+        } else if (provider.status !== 'verified') {
+          // Honest failure: never pretend an unverified provider did work.
+          const error = `Provider "${provider.name}" has status "${provider.status}" — execution path not verified. Run recorded as failed (no silent success).`;
+          this.finish(run.id, 'failed', { error, exitCode: null });
+          this.addEvent(run.id, 'error', error);
+        } else {
+          const error = `No execution adapter wired for provider "${provider.name}" yet.`;
+          this.finish(run.id, 'failed', { error });
+          this.addEvent(run.id, 'error', error);
+        }
       }
     } catch (err) {
       const error = redact(err instanceof Error ? err.message : String(err)).redacted;
@@ -249,6 +267,66 @@ export class RunService {
       // ignore shutdown races
     }
     void provider;
+  }
+
+  /**
+   * Agent adapters (Claude Code / Codex / HTTP API / local model).
+   * The prompt is built from task + project context; the adapter fences
+   * untrusted parts and the output becomes evidence — success only when the
+   * process itself reports success.
+   */
+  private async executeAdapter(run: Run, provider: Provider, adapter: AgentAdapter): Promise<void> {
+    const fresh = this.get(run.id) ?? run;
+
+    // Honest verification gate first: an unverified/unavailable adapter never "runs".
+    const check = await adapter.check();
+    if (check.status !== 'verified') {
+      const error = `provider ${adapter.key} is not verified (${check.status}) — ${check.notes}`;
+      this.finish(run.id, 'failed', { error });
+      this.addEvent(run.id, 'error', error);
+      return;
+    }
+
+    const worktreePath = fresh.worktreePath ?? '';
+    if (adapter.editsFiles && !worktreePath) {
+      const error = `Adapter "${adapter.key}" edits files but the run has no isolated worktree — refusing to run against a shared workspace.`;
+      this.finish(run.id, 'failed', { error });
+      this.addEvent(run.id, 'error', error);
+      return;
+    }
+
+    const task = fresh.taskId ? this.tasks.get(fresh.taskId) : undefined;
+    const project = task?.projectId
+      ? this.db.queryOne<{ instructions: string }>('SELECT instructions FROM projects WHERE id = ?', task.projectId)
+      : undefined;
+    const prompt = buildAgentPrompt(run, task ?? null, project?.instructions ?? '');
+
+    this.addEvent(run.id, 'command', `adapter ${adapter.key} (${adapter.editsFiles ? 'coding agent' : 'text-stage agent'}) stage=${run.stage}`);
+    const result = await adapter.execute({
+      worktreePath,
+      prompt,
+      budgetSeconds: Math.max(30, Math.min(run.budgetSeconds, 1800)),
+    });
+
+    const files = result.filesChanged.length > 0 ? result.filesChanged : await this.git.changedFiles(worktreePath || '.');
+    this.db.run('UPDATE runs SET changed_files = ?, exit_code = ? WHERE id = ?', JSON.stringify(files), result.exitCode, run.id);
+    this.addEvent(run.id, 'evidence', `Adapter output captured (${result.output.length} chars, ${files.length} file(s) changed, usedLlm=${result.usedLlm})`);
+
+    this.tasks.addEvidence({
+      taskId: run.taskId ?? null,
+      runId: run.id,
+      kind: result.usedLlm ? 'note' : 'command_output',
+      summary: `Agent run via ${adapter.key} (${result.usedLlm ? 'LLM-backed' : 'no LLM'}): ${result.ok ? 'completed' : 'failed'}`,
+      content: result.output,
+      source: result.usedLlm ? 'agent' : 'command',
+    });
+
+    if (result.ok) {
+      this.finish(run.id, 'succeeded', { exitCode: result.exitCode ?? 0 });
+    } else {
+      this.finish(run.id, 'failed', { error: result.error ?? 'adapter reported failure', exitCode: result.exitCode });
+      this.addEvent(run.id, 'error', result.error ?? 'adapter reported failure');
+    }
   }
 
   /** Generic CLI adapter: safe, read-only evidence commands only. */
@@ -323,6 +401,31 @@ export class RunService {
   activeRuns(): Run[] {
     return this.db.query<Record<string, unknown>>(`SELECT * FROM runs WHERE status IN ('queued','running') ORDER BY created_at DESC`).map(toRun);
   }
+}
+
+/** Build the agent prompt from task + project context (all task text is untrusted data). */
+export function buildAgentPrompt(run: Run, task: Task | null, projectInstructions: string): string {
+  const parts: string[] = [];
+  parts.push(`You are a coding agent working in an isolated git worktree (branch ${run.branchName ?? 'n/a'}) for the Development Command Center.`);
+  parts.push(`Stage: ${run.stage}. Time budget: ${run.budgetSeconds}s.`);
+  if (projectInstructions.trim()) {
+    parts.push('');
+    parts.push('Project instructions (authoritative):');
+    parts.push(projectInstructions.trim());
+  }
+  if (task) {
+    parts.push('');
+    parts.push(`Task: ${task.title}`);
+    parts.push(task.description || '(no description)');
+    if (task.acceptanceCriteria.length > 0) {
+      parts.push('');
+      parts.push('Acceptance criteria (produce evidence for each):');
+      task.acceptanceCriteria.forEach((c) => parts.push(`- ${c}`));
+    }
+    parts.push('');
+    parts.push('Report what you changed and how it was verified. Do not claim success without evidence.');
+  }
+  return parts.join('\n');
 }
 
 export function toRun(row: Record<string, unknown>): Run {

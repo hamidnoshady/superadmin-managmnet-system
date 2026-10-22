@@ -27,7 +27,7 @@
 - [x] Crash recovery: interrupted runs recovered as `interrupted`, never as success
 - [x] Approval queue (default-deny) + append-only audit trail
 - [x] Evidence-backed dashboard (source + timestamp + confidence on every status)
-- [x] Tests: 101 across core + worker
+- [x] Tests: 115 across core + worker (grew with each phase)
 
 ## Phase 2 — Support intelligence ✅ (delivered except live channel)
 
@@ -38,8 +38,8 @@
 - [x] Duplicate/relationship detection (advisory ranking with rationale; never auto-discards)
 - [x] Evidence-backed issue drafts (context, impact, repro, expected/actual, evidence, acceptance criteria, implementation plan, test requirements) with approval-gated creation
 - [x] Triage/investigation/planning agents (AI brain pipeline with shared findings graph; untrusted content fenced + injection findings recorded; LLM participation disclosed honestly)
+- [x] Resolution sync-back path: local resolution with evidence + `postResolution` channel (honest unavailability until the live endpoint is verified) + GitHub issue comment/close behind `issue_comment`/`issue_close` approval gates
 - [ ] Live Biza Miz ingestion flip-on (blocked on owner verifying the endpoint/permissions — the adapter refuses fake data meanwhile)
-- [ ] Resolution sync back to Biza Miz (blocked on permissions/interface)
 
 ## Phase 3 — Coordinated coding ✅ (delivered)
 
@@ -53,9 +53,9 @@
 - [x] PR preparation from evidence + criteria coverage, approval-gated `gh pr create` execution
 - [x] CI/review status visibility from synced PR data; release readiness board
 - [x] Timeout budgets (overdue runs → `timeout`), bounded retries with linked chains, crash recovery
-- [ ] LLM-backed coding agents at scale (adapters refuse until verified — Claude Code, Codex, Arena)
+- [x] LLM-backed coding agents: real adapters for Claude Code CLI and OpenAI Codex CLI (isolated worktree required, redacted fenced prompts, changed-files + output as evidence, success only on exit 0) plus text-only HTTP-API/local-model adapters — each adapter's readiness is probed per host and never assumed
 
-## Phase 4 — Advanced automation ✅ (delivered except remote sync)
+## Phase 4 — Advanced automation ✅ (delivered)
 
 - [x] Provider adapter framework (cli/api/browser/local_model) with verification-gated readiness and honest refusals
 - [x] Configurable workflows: per-project autonomy levels 0–3, required stages, retry limits, allowed providers
@@ -63,8 +63,19 @@
 - [x] Engineering health metrics (cycle time, run success rate, evidence coverage, quality signals)
 - [x] Release/deployment visibility (readiness verdict, blockers, CI concerns)
 - [x] Backup/restore with validation + approval-gated destructive restore
-- [x] Multi-device handoff primitive: workspace bundle export/import (remote sync service explicitly deferred per the issue)
+- [x] Multi-device handoff primitive: workspace bundle export/import
+- [x] Optional remote bundle sync: explicit owner-triggered push/pull against a configured endpoint (no background service; pulled bundles validated before install; DB restore stays behind the `restore_backup` gate)
 - [x] Browser automation kept behind an adapter interface (planned; never bypasses authentication)
+
+## Phase 5 — Remaining implementations ✅ (delivered)
+
+- [x] LLM-assisted pipeline stages (triage) through the redaction/secret gate, with honest `usedLlm` disclosure and deterministic fallback
+- [x] Autonomy ≥ 2 unattended implementation flow: implementation → tests → independent review → PR preparation in one guarded run; PR **creation** stays approval-gated; nothing merges/releases unattended
+- [x] GitHub CI checks sync (`check-runs` → `no_checks/pending/failing/passing`) with PR head-SHA tracking
+- [x] Resolution sync-back (support → local resolve → optional Biza Miz API post + gated GitHub issue comment/close)
+- [x] OS-protected secret store (Windows Credential Manager via P/Invoke on Windows; session-env + 0600 fallback file elsewhere; values never in SQLite/logs/prompts/bundles)
+- [x] LLM endpoint configuration (`llm_providers` settings: baseUrl/model/apiKeyEnv/style — env var NAMES only)
+- [x] Tauri/Windows desktop scaffold (`apps/ui/src-tauri`) — **scaffold only, uncompiled in the sandbox**; verify on a Windows host before distribution
 
 ## Acceptance criteria coverage (issue #1 §12)
 
@@ -84,4 +95,4 @@
 | Secrets and sensitive support data protected/redacted | ✅ (intake + outbound gates, injection detection) |
 | Disconnected providers/failed integrations clearly visible | ✅ |
 | Completed tasks have verifiable evidence mapped to acceptance criteria | ✅ (enforced + coverage mapping in PR prep) |
-| Tests cover interruption/recovery, conflicts, permissions, stale sync, untrusted input | ✅ (101 tests) |
+| Tests cover interruption/recovery, conflicts, permissions, stale sync, untrusted input | ✅ (115 tests) |

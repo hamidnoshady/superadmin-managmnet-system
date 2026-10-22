@@ -30,17 +30,31 @@ crash-recovery marks interrupted runs explicitly.
 
 ## Steps to implement on a Windows machine
 
+A Tauri 2 scaffold now exists at `apps/ui/src-tauri` (config, Rust shell, and a
+Windows Credential Manager binding). It has **not** been compiled or run in the
+development sandbox (no Rust toolchain and no Windows host there) — treat it as
+a starting point, not a verified build.
+
 1. Install Rust (stable, MSVC toolchain) + Node 22 + WebView2 runtime.
-2. `npm run build -w @dcc/ui` → static assets.
-3. Scaffold `src-tauri` with the Tauri CLI, point it at `apps/ui/dist`.
-4. Add sidecar launch/monitor of `apps/worker` (Node portable or bundled).
-5. Bind the Windows Credential Manager helper for `githubMode: token_env` style secrets.
-6. Code-sign the MSI/NSIS bundle; configure the updater feed.
+2. `npm install && npm run build:core && npm run build -w @dcc/ui` → static assets.
+3. `cargo install tauri-cli --version "^2"` then `npm run tauri build` from `apps/ui`
+   (or `npx tauri build`) to produce the MSI/NSIS bundles from `src-tauri/tauri.conf.json`.
+4. Add sidecar launch/monitor of `apps/worker` (Node portable or bundled) — the
+   scaffold currently serves the UI only; wire the worker lifecycle next.
+5. The Credential Manager binding (`src-tauri/src/secret_store.rs`, `dcc-` target
+   prefix) is implemented but **unverified** — smoke-test it on the target host
+   before relying on it. The worker-side secret store (`services/secrets.ts`)
+   already talks to the Credential Manager via PowerShell P/Invoke as a fallback.
+6. Code-sign the MSI/NSIS bundle; configure the updater feed. Confirm the
+   product identity ("Freebuf" naming) before setting the bundle identifier.
 7. Verify: run the full test suite on Windows (`npm test`), then the packaging checklist:
    - UI starts and reaches the worker via loopback
    - worker survives UI close/reopen
    - interrupted runs recover
    - credentials never touch `.dcc/`
+   - secret store round-trips through Credential Manager
+8. Decide minimum Windows versions/architectures (owner) and pin the WebView2
+   runtime policy accordingly.
 
 ## What stays the same
 

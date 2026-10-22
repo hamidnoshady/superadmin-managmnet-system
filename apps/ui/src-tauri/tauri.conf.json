@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Development Command Center",
+  "version": "0.1.0",
+  "identifier": "local.dcc.command-center",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Development Command Center",
+        "width": 1440,
+        "height": 900,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "category": "DeveloperTool",
+    "shortDescription": "Local-first Development Command Center",
+    "longDescription": "Local-first Windows development command center coordinating LLM coding agents, GitHub operations, and Biza Miz support with approval gates and evidence-based reporting. Scaffold build — verify on the target Windows host before distribution."
+  }
+}
