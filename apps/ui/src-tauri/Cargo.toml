@@ -1,0 +1,28 @@
+# Tauri desktop scaffold (issue #1 — Windows distribution).
+#
+# STATUS: scaffold only. It has NOT been compiled or run in the development
+# sandbox (no Rust toolchain / no Windows here). Build it on a Windows host
+# with `npm run tauri build` from apps/ui after `cargo install tauri-cli`.
+# Do not treat this scaffold as a verified packaging path until a signed build
+# has been produced and smoke-tested on the target Windows version.
+[package]
+name = "dcc-desktop"
+version = "0.1.0"
+description = "Development Command Center desktop shell (Windows)"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Windows Credential Manager backend for the OS-protected secret store.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Security_Credentials"] }
+
+[profile.release]
+strip = true

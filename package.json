@@ -1,0 +1,28 @@
+{
+  "name": "dev-command-center",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows-first Development Command Center — projects, GitHub, agents, and Biza Miz support in one control center",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:core": "npm run build -w @dcc/core",
+    "prepare": "npm run build:core",
+    "dev:worker": "npm run dev -w @dcc/worker",
+    "dev:ui": "npm run dev -w @dcc/ui",
+    "seed": "npm run seed -w @dcc/worker",
+    "test": "npm run build:core && npm test -w @dcc/core && npm test -w @dcc/worker",
+    "typecheck": "npm run build:core && npm run typecheck -w @dcc/worker && npm run typecheck -w @dcc/ui",
+    "start": "npm run start -w @dcc/worker"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

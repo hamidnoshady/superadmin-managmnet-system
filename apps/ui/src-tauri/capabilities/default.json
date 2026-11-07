@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the main window. The desktop shell only provides OS secret storage; all product logic runs in the local worker and the web UI.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
